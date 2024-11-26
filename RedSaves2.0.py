@@ -1,4 +1,4 @@
-# RedSaves 2.0
+# RedSaves 2.1
 
 from myjdapi import Myjdapi
 import requests
@@ -17,10 +17,12 @@ CLIENT_ID = os.getenv('CLIENT_ID')
 SECRET_TOKEN = os.getenv('SECRET_TOKEN')
 REFRESH_TOKEN = os.getenv('REFRESH_TOKEN')
 DESTINATION_FOLDER = os.getenv('DESTINATION_FOLDER')
+PUSHOVER_USER_KEY = os.getenv('PUSHOVER_USER_KEY')
+PUSHOVER_API_TOKEN = os.getenv('PUSHOVER_API_TOKEN')
 HISTORY_FILE = "sent_links.txt"  # File to store previously sent links
 
 # Ensure all required variables are set
-if not all([EMAIL, PASSWORD, DEVICE_NAME, CLIENT_ID, SECRET_TOKEN, REFRESH_TOKEN, DESTINATION_FOLDER]):
+if not all([EMAIL, PASSWORD, DEVICE_NAME, CLIENT_ID, SECRET_TOKEN, REFRESH_TOKEN, DESTINATION_FOLDER, PUSHOVER_USER_KEY, PUSHOVER_API_TOKEN]):
     raise EnvironmentError("Missing required environment variables in .env file.")
 
 # Ensure the history file exists
@@ -108,10 +110,31 @@ def send_to_jdownloader(links):
                 "destinationFolder": DESTINATION_FOLDER
             }])
             print(f"Links sent to JDownloader: {response}")
+            return len(links)  # Return the number of links sent
         else:
             print("JDownloader device not found.")
+            return 0
     except Exception as e:
         log_error(f"Error sending links to JDownloader: {e}")
+        return 0
+
+# Send a Pushover notification using the requests library
+def send_pushover_notification(message):
+    try:
+        url = "https://api.pushover.net/1/messages.json"
+        payload = {
+            "token": PUSHOVER_API_TOKEN,
+            "user": PUSHOVER_USER_KEY,
+            "message": message,
+            "title": "RedSaves Notification"
+        }
+        response = requests.post(url, data=payload)
+        if response.status_code == 200:
+            print("Pushover notification sent successfully.")
+        else:
+            log_error(f"Failed to send Pushover notification. Status code: {response.status_code}")
+    except Exception as e:
+        log_error(f"Error sending Pushover notification: {e}")
 
 # Main execution
 if __name__ == "__main__":
@@ -124,11 +147,15 @@ if __name__ == "__main__":
                 new_links = filter_new_links(media_links)
                 if new_links:
                     print(f"Found {len(new_links)} new media links.")
-                    send_to_jdownloader(new_links)
+                    count = send_to_jdownloader(new_links)
                     save_links_to_history(new_links)
+                    send_pushover_notification(f"{count} new media links have been sent to JDownloader!")
                 else:
                     print("No new media links to send.")
+                    send_pushover_notification("No new media links found.")
             else:
                 print("No media links found.")
+                send_pushover_notification("No media links found in saved posts.")
         else:
             print("No saved posts fetched.")
+            send_pushover_notification("Failed to fetch saved posts.")
