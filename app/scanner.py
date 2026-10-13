@@ -153,17 +153,30 @@ def _post_duration(data):
         return None
 
 
+def is_picture(url="", local_file=""):
+    """True when the media is a still image (not a video).
+
+    Checks the local filename first (a downloaded .jpg is a picture even
+    though it plays from /media-file), then the source URL.
+    """
+    target = (local_file or url or "").lower()
+    return target.endswith(IMAGE_EXTS)
+
+
 def media_embed(url, link_id=None, local_file=""):
     """How to play a stored URL in the media center. Returns (kind, src):
 
     - ('video', '/media-file/{id}'): downloaded file on local disk — preferred,
       bypasses regional blocks entirely
+    - ('image', '/media-file/{id}'): downloaded picture on local disk
     - ('redgifs', ifr_url): embeddable redgifs player for watch/ifr/v3 forms
     - ('video', url): direct mp4 (v.redd.it media files, imgur mp4)
     - ('image', url): direct image (i.redd.it / imgur jpg, png, webp, gif)
     - ('link', url): anything else — open the original in a new tab
     """
     if local_file and link_id is not None:
+        if is_picture(local_file=local_file):
+            return ("image", f"/media-file/{link_id}")
         return ("video", f"/media-file/{link_id}")
     try:
         p = urlsplit(url)

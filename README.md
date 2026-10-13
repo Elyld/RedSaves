@@ -23,6 +23,12 @@ gives it a real history database, a dashboard, and its own scheduler.
 - **v2.13.0** also hardens deletes: dupe merge folds file pointers, stars, and
   best stats into the winner before deleting; graveyard purge never removes a
   row with a downloaded file (skipped + reported).
+- **v2.15.0** — Media center keeps up with big libraries: server-side
+  pagination (48 per page, phone-friendly), **🎬 Videos / 🖼️ Pictures**
+  filter, and a proper **🔀 Shuffle mode** — fullscreen player, walks a
+  freshly shuffled deck of everything matching your filters (no repeats
+  until the deck runs out), prev/next + arrow keys, ★ toggle in-player.
+  Downloaded pictures now play as images instead of a broken video tag.
 - **v2.12.0** — Pictures are first-class media (`.jpg`/`.png`/`.webp`/`.jpeg`
   now collected, viewable, and matched to local downloads — previously only
   `.gif`/`.mp4`/redgifs/v.redd.it were picked up); **🧹 Dupes** detector

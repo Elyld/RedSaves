@@ -643,6 +643,13 @@ function toggleFav(id, btn) {
       const it = MEDIA[lbIndex];
       if (it && it.id === id) renderLb();
     });
+  // keep the shuffle overlay in sync when it's open
+  const shBox = document.getElementById('shufflebox');
+  if (shBox && !shBox.hidden && typeof shufDeck !== 'undefined' && shufDeck.length) {
+    const sid = shufDeck[shufPos];
+    const sit = shufCache[sid];
+    if (sit && sit.id === id) { sit.fav = s.favorite; shufRender(sit); }
+  }
 }
 document.addEventListener('click', e => {
   const star = e.target.closest('.mstar');
@@ -667,8 +674,93 @@ document.addEventListener('keydown', e => {
   if (e.key === 'ArrowRight') lbNav(1);
   if (e.key === 'ArrowLeft') lbNav(-1);
 });
+// ---- fullscreen shuffle mode ----
+let shufDeck = [], shufPos = -1;
+const shufCache = {};
+function shufFilters() {
+  const f = document.getElementById('mediafilters');
+  const p = new URLSearchParams();
+  for (const [k, v] of new FormData(f).entries()) { if (v) p.append(k, v); }
+  return p.toString();
+}
+function shufShuffle(a) {
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+function shufItem(id) {
+  if (shufCache[id]) return Promise.resolve(shufCache[id]);
+  return fetch('/api/media/item/' + id).then(r => r.json()).then(it => {
+    shufCache[id] = it; return it;
+  });
+}
+function shufRender(it) {
+  document.getElementById('shuf-player').innerHTML = playerHTML(it);
+  document.getElementById('shuf-title').textContent = it.title;
+  const bits = [];
+  if (it.author) bits.push(it.author);
+  if (it.creator && it.creator !== it.author) bits.push('@' + it.creator);
+  if (it.sub) bits.push('r/' + it.sub);
+  if (it.score) bits.push('▲ ' + it.score);
+  if (it.views) bits.push('👁 ' + fmtNum(it.views));
+  if (it.likes) bits.push('♥ ' + fmtNum(it.likes));
+  if (it.duration) bits.push(fmtDur(it.duration));
+  document.getElementById('shuf-sub').textContent = bits.join(' · ');
+  document.getElementById('shuf-open').href = it.url;
+  const fb = document.getElementById('shuf-fav');
+  fb.textContent = it.fav ? '★' : '☆';
+  fb.classList.toggle('on', !!it.fav);
+  document.getElementById('shuf-count').textContent = (shufPos + 1) + ' / ' + shufDeck.length;
+  const v = document.querySelector('#shuf-player video');
+  if (v) v.onended = () => shufNav(1);
+}
+function shufShow(pos) {
+  shufPos = pos;
+  shufItem(shufDeck[shufPos]).then(shufRender);
+}
+function shufNav(d) {
+  let n = shufPos + d;
+  if (n >= shufDeck.length) { shufShuffle(shufDeck); n = 0; }
+  if (n < 0) n = 0;
+  shufShow(n);
+}
+function shufOpen() {
+  const box = document.getElementById('shufflebox');
+  box.hidden = false;
+  document.body.style.overflow = 'hidden';
+  const go = box.requestFullscreen || document.documentElement.requestFullscreen;
+  if (go) go.call(box.requestFullscreen ? box : document.documentElement).catch(() => {});
+  shufShow(0);
+}
+function shufClose() {
+  document.getElementById('shufflebox').hidden = true;
+  document.getElementById('shuf-player').innerHTML = '';
+  document.body.style.overflow = '';
+  if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+}
 document.getElementById('mshuffle').addEventListener('click', () => {
-  openLb(Math.floor(Math.random() * MEDIA.length));
+  fetch('/api/media/shuffle?' + shufFilters()).then(r => r.json()).then(s => {
+    if (!s.ids || !s.ids.length) return;
+    shufDeck = shufShuffle(s.ids.slice());
+    for (const k of Object.keys(shufCache)) delete shufCache[k];
+    shufOpen();
+  });
+});
+document.getElementById('shuf-next').addEventListener('click', () => shufNav(1));
+document.getElementById('shuf-prev').addEventListener('click', () => shufNav(-1));
+document.getElementById('shuf-close').addEventListener('click', shufClose);
+document.getElementById('shuf-fav').addEventListener('click', () => {
+  const id = shufDeck[shufPos];
+  if (id != null) toggleFav(id);
+});
+document.addEventListener('keydown', e => {
+  const box = document.getElementById('shufflebox');
+  if (!box || box.hidden) return;
+  if (e.key === 'Escape') shufClose();
+  if (e.key === 'ArrowRight') shufNav(1);
+  if (e.key === 'ArrowLeft') shufNav(-1);
 });
 function fillPlaylistSelect() {
   const sel = document.getElementById('lb-pl');
@@ -691,8 +783,48 @@ fillPlaylistSelect();
 """
 
 
+def _page_label(page, pages, total, shown):
+    if total == 0:
+        return "Nothing here — try clearing the filters."
+    if pages <= 1:
+        return f"{total} item{'s' if total != 1 else ''}"
+    start = (page - 1) * 48 + 1
+    end = start + shown - 1
+    return f"Showing {start}–{end} of {total}"
+
+
+def _pagination(page, pages, q, author, subreddit, creator, fav, hide_dead,
+                sort, kind):
+    if pages <= 1:
+        return ""
+    from urllib.parse import urlencode
+    base = {"q": q, "author": author, "subreddit": subreddit,
+            "creator": creator, "sort": sort, "kind": kind}
+    if fav:
+        base["fav"] = "1"
+    if hide_dead:
+        base["hide_dead"] = "1"
+
+    def link(p, label, cls=""):
+        qs = urlencode({**base, "page": p})
+        return f'<a class="btn pglink {cls}" href="/media?{qs}">{label}</a>'
+
+    nums = []
+    for p in sorted(set([1, page - 1, page, page + 1, pages])):
+        if 1 <= p <= pages:
+            nums.append(link(p, str(p), "on" if p == page else ""))
+    html = ""
+    if page > 1:
+        html += link(page - 1, "« Prev")
+    html += "".join(nums)
+    if page < pages:
+        html += link(page + 1, "Next »")
+    return f'<nav class="pagenav">{html}</nav>'
+
+
 def media_page(links, q="", author="", subreddit="", creator="", fav=0,
                hide_dead=0, sort="new", authors=(), subs=(), creators=(),
+               kind="all", page=1, pages=1, total=0,
                enrich=None, linkcheck=None, filescan=None, jdsync=None,
                playlists=(), dupe_count=0, dead_count=0) -> str:
     """Media center: filterable video grid + lightbox player."""
@@ -821,7 +953,7 @@ def media_page(links, q="", author="", subreddit="", creator="", fav=0,
 
     body = f"""
 <h1>Media</h1>
-<form method="get" action="/media" class="mediabar">
+<form method="get" action="/media" class="mediabar" id="mediafilters">
   <input type="search" name="q" value="{esc(q)}" placeholder="Search title, author…">
   <select name="author">{opts(authors, author, "All posters")}</select>
   <select name="creator">{opts(creators, creator, "All creators")}</select>
@@ -830,6 +962,11 @@ def media_page(links, q="", author="", subreddit="", creator="", fav=0,
     <option value="new"{' selected' if sort != 'old' else ''}>Newest first</option>
     <option value="old"{' selected' if sort == 'old' else ''}>Oldest first</option>
   </select>
+  <span class="kindseg" role="group" aria-label="Media type">
+    <label class="{'on' if kind == 'all' else ''}"><input type="radio" name="kind" value="all"{' checked' if kind == 'all' else ''}>All</label>
+    <label class="{'on' if kind == 'vids' else ''}"><input type="radio" name="kind" value="vids"{' checked' if kind == 'vids' else ''}>🎬 Videos</label>
+    <label class="{'on' if kind == 'pics' else ''}"><input type="radio" name="kind" value="pics"{' checked' if kind == 'pics' else ''}>🖼️ Pictures</label>
+  </span>
   <label class="favcheck"><input type="checkbox" name="fav" value="1"{' checked' if fav else ''}> ★ only</label>
   <label class="favcheck"><input type="checkbox" name="hide_dead" value="1"{' checked' if hide_dead else ''}> Hide dead</label>
   <button type="submit" class="btn">Filter</button>
@@ -853,9 +990,25 @@ def media_page(links, q="", author="", subreddit="", creator="", fav=0,
   <span class="dim">Refresh pulls thumbnails, scores and durations from your saved posts. Dead-link check verifies every URL. Scan local files matches your JDownloader downloads so videos play from disk — no regional blocks. All run in the background.</span>
 </div>
 {tools}
-<p class="dim">{len(links)} item{'s' if len(links) != 1 else ''}</p>
+<p class="dim">{_page_label(page, pages, total, len(links))}</p>
 <div class="mgrid">
 {''.join(cards) if cards else '<p class="dim">Nothing here — try clearing the filters.</p>'}
+</div>
+{_pagination(page, pages, q, author, subreddit, creator, fav, hide_dead, sort, kind)}
+<div id="shufflebox" class="shuf" hidden>
+  <div class="shuf-player" id="shuf-player"></div>
+  <div class="shuf-meta">
+    <h3 id="shuf-title"></h3>
+    <p id="shuf-sub" class="dim"></p>
+    <div class="shuf-actions">
+      <button class="btn" id="shuf-prev" title="Previous">◀</button>
+      <span class="dim" id="shuf-count"></span>
+      <button class="btn" id="shuf-next" title="Next random">▶</button>
+      <button class="btn" id="shuf-fav" title="Toggle favorite">☆</button>
+      <a class="btn" id="shuf-open" target="_blank" rel="noopener" title="Open original">↗</a>
+      <button class="btn" id="shuf-close" title="Close">✕</button>
+    </div>
+  </div>
 </div>
 <div id="lightbox" class="lb" hidden>
   <div class="lb-backdrop" onclick="closeLb()"></div>
