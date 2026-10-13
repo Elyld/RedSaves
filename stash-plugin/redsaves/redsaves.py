@@ -105,8 +105,9 @@ def plugin_settings():
     settings = {}
     data = gql(CONFIGURATION)
     try:
-        plugins = json.loads(
-            ((data or {}).get("configuration") or {}).get("plugins") or "{}")
+        plugins = ((data or {}).get("configuration") or {}).get("plugins") or {}
+        if isinstance(plugins, str):
+            plugins = json.loads(plugins)
         settings = plugins.get(PLUGIN_ID) or {}
     except Exception as e:
         log(f"could not read plugin settings: {e}")
