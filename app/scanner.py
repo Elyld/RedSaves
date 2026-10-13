@@ -141,6 +141,7 @@ def fetch_info_by_url(config: ScanConfig, token, url):
             'post_permalink': data.get('permalink', ''),
             'subreddit': (data.get('subreddit') or ''),
             'author': (data.get('author') or ''),
+            'created_utc': data.get('created_utc'),
         }
     except Exception as e:
         log_error(f"/api/info lookup failed for {url[:60]}: {e}")
@@ -149,13 +150,16 @@ def fetch_info_by_url(config: ScanConfig, token, url):
 
 def apply_enrichment(link_id: int, meta: dict) -> None:
     """Fill empty metadata fields on a link. Never overwrites existing
-    non-empty values."""
+    non-empty values. When the title was empty (an imported bare URL whose
+    date is just the import date), stamp sent_at from the post's creation
+    date — an approximation, but closer to reality than today."""
     session = get_session()
     try:
         row = session.query(Link).filter(Link.id == link_id).first()
         if not row:
             return
-        if not row.post_title and meta.get('post_title'):
+        title_was_empty = not row.post_title
+        if title_was_empty and meta.get('post_title'):
             row.post_title = meta['post_title']
         if not row.post_permalink and meta.get('post_permalink'):
             row.post_permalink = meta['post_permalink']
@@ -163,6 +167,11 @@ def apply_enrichment(link_id: int, meta: dict) -> None:
             row.subreddit = meta['subreddit']
         if not row.author and meta.get('author'):
             row.author = meta['author']
+        if title_was_empty and meta.get('created_utc'):
+            try:
+                row.sent_at = datetime.fromtimestamp(float(meta['created_utc']))
+            except (ValueError, TypeError, OSError):
+                pass
         session.commit()
     finally:
         session.close()

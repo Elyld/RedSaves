@@ -288,3 +288,33 @@ def test_enrich_route_409_when_running(fresh_db, monkeypatch):
             assert r.status_code == 409
     finally:
         scanner._enrich_lock.release()
+
+
+def test_enrich_backfills_date_from_post_created_utc(fresh_db, monkeypatch, config, token_ok):
+    """Imported bare URLs get sent_at from the post's creation date instead of
+    the meaningless import date; links that already had titles keep theirs."""
+    from datetime import datetime as dt
+    session = db.get_session()
+    bare_id = _add_link(session, "https://i.imgur.com/c.gif")  # no title
+    titled_id = _add_link(session, "https://i.imgur.com/d.gif", title="Already titled")
+    session.close()
+
+    created = 1700000000  # 2023-11-14
+    payload = {"data": {"children": [{"data": {
+        "title": "Old post", "permalink": "/r/pics/comments/xyz",
+        "subreddit": "pics", "author": "oldposter", "created_utc": created}}]}}
+    _fake_info(monkeypatch, {"https://i.imgur.com/c.gif": payload,
+                             "https://i.imgur.com/d.gif": payload})
+    _no_throttle(monkeypatch)
+
+    scanner.run_enrich(config)
+
+    session = db.get_session()
+    try:
+        bare = session.query(Link).filter(Link.id == bare_id).first()
+        titled = session.query(Link).filter(Link.id == titled_id).first()
+        assert bare.sent_at == dt.fromtimestamp(created)
+        # titled link: run_enrich only processes title-less links, untouched
+        assert titled.post_title == "Already titled"
+    finally:
+        session.close()
