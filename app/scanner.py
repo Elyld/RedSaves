@@ -128,6 +128,35 @@ def get_enrich_progress() -> dict:
     return dict(_enrich_progress)
 
 
+def media_embed(url):
+    """How to play a stored URL in the media center. Returns (kind, src):
+
+    - ('redgifs', ifr_url): embeddable redgifs player for watch/ifr/v3 forms
+    - ('video', url): direct mp4 (v.redd.it media files, imgur mp4)
+    - ('image', url): direct gif (i.redd.it, imgur gif)
+    - ('link', url): anything else — open the original in a new tab
+    """
+    try:
+        p = urlsplit(url)
+        host = (p.hostname or "").lower()
+        path = p.path or ""
+        segs = [s for s in path.split("/") if s]
+        if host in ("redgifs.com", "www.redgifs.com", "v3.redgifs.com"):
+            if len(segs) >= 2 and segs[0] in ("watch", "ifr"):
+                return ("redgifs", f"https://www.redgifs.com/ifr/{segs[1]}")
+            return ("link", url)
+        if host == "v.redd.it":
+            return ("video", url)
+        low = path.lower()
+        if low.endswith(".gif"):
+            return ("image", url)
+        if low.endswith(".mp4"):
+            return ("video", url)
+        return ("link", url)
+    except Exception:
+        return ("link", url)
+
+
 def _canonicalize_url(url):
     """Normalize a saved media URL to the post form Reddit likely indexed.
 

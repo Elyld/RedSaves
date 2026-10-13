@@ -150,6 +150,54 @@ def top():
         session.close()
 
 
+@app.get("/media", response_class=HTMLResponse)
+def media(q: str = Query(default=""), author: str = Query(default=""),
+          subreddit: str = Query(default=""), fav: int = Query(default=0),
+          sort: str = Query(default="new")):
+    """Media center: filterable video grid with lightbox player."""
+    session = get_session()
+    try:
+        query = session.query(Link)
+        if q:
+            like = f"%{q}%"
+            query = query.filter(or_(
+                Link.url.like(like), Link.post_title.like(like),
+                Link.subreddit.like(like), Link.author.like(like)))
+        if author:
+            query = query.filter(Link.author == author)
+        if subreddit:
+            query = query.filter(Link.subreddit == subreddit)
+        if fav:
+            query = query.filter(Link.favorite.is_(True))
+        query = query.order_by(Link.sent_at if sort == "old" else desc(Link.sent_at))
+        links = query.all()
+        authors = (session.query(Link.author, func.count(Link.id))
+                   .filter(Link.author != "").group_by(Link.author)
+                   .order_by(desc(func.count(Link.id))).all())
+        subs = (session.query(Link.subreddit, func.count(Link.id))
+                .filter(Link.subreddit != "").group_by(Link.subreddit)
+                .order_by(desc(func.count(Link.id))).all())
+        return pages.media_page(links, q, author, subreddit, fav, sort,
+                                [(a or "?", c) for a, c in authors],
+                                [(s or "?", c) for s, c in subs])
+    finally:
+        session.close()
+
+
+@app.post("/api/favorite/{link_id}")
+def toggle_favorite(link_id: int):
+    session = get_session()
+    try:
+        link = session.query(Link).filter(Link.id == link_id).first()
+        if not link:
+            raise HTTPException(status_code=404, detail="not found")
+        link.favorite = not link.favorite
+        session.commit()
+        return JSONResponse({"favorite": link.favorite})
+    finally:
+        session.close()
+
+
 @app.get("/logs", response_class=HTMLResponse)
 def logs():
     return pages.logs_view()

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from sqlalchemy import Column, DateTime, Integer, String, Text
+from sqlalchemy import Boolean, Column, DateTime, Integer, String, Text
 from sqlalchemy.orm import declarative_base
 
 Base = declarative_base()
@@ -25,6 +25,7 @@ class Link(Base):
     sent_at = Column(DateTime, nullable=True)
     status = Column(String(16), nullable=False, default="sent")
     run_id = Column(Integer, nullable=True)
+    favorite = Column(Boolean, nullable=False, default=False)
 
 
 class Run(Base):

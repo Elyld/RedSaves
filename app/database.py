@@ -47,6 +47,7 @@ def init_db() -> None:
     Base.metadata.create_all(_engine)
     _ensure_author_column()
     _ensure_source_column()
+    _ensure_favorite_column()
     migrate_legacy_history()
 
 
@@ -68,6 +69,16 @@ def _ensure_source_column() -> None:
         with _engine.begin() as conn:
             conn.execute(text("ALTER TABLE links ADD COLUMN source VARCHAR(16) DEFAULT 'saved'"))
         logger.info("added links.source column")
+
+
+def _ensure_favorite_column() -> None:
+    """Add links.favorite to databases created before v2.9.0 (same no-Alembic
+    guard pattern)."""
+    cols = [c["name"] for c in inspect(_engine).get_columns("links")]
+    if "favorite" not in cols:
+        with _engine.begin() as conn:
+            conn.execute(text("ALTER TABLE links ADD COLUMN favorite BOOLEAN DEFAULT 0"))
+        logger.info("added links.favorite column")
 
 
 def migrate_legacy_history() -> int:
