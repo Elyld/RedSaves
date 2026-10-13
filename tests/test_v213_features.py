@@ -186,3 +186,77 @@ def test_jdsync_status_endpoint(fresh_db, monkeypatch):
         assert r.status_code == 200 and r.json()["running"] is False
         r = client.post("/media/sync-jd")
         assert r.status_code in (200, 303)
+
+
+# --- delete cross-checks ----------------------------------------------------------
+
+def test_merge_consolidates_file_pointer(fresh_db):
+    session = db.get_session()
+    w = _add_link(session, "https://www.redgifs.com/watch/AAA",
+                  post_permalink="/r/s/comments/abc123/t/", post_title="T")
+    keeper = _add_link(session, "https://v.redd.it/xyz",
+                       post_permalink="/r/s/comments/abc123/t/",
+                       local_file="vids/x.mp4", favorite=True, score=50,
+                       tags="a, b", creator="c1")
+    session.close()
+    groups = scanner.find_dupe_groups()
+    assert len(groups) == 1
+    # the file-backed favorite wins outright
+    assert groups[0]["winner_id"] == keeper
+    assert scanner.merge_dupe_group(groups[0]["winner_id"],
+                                    [l.id for l in groups[0]["links"]]) == 1
+    session = db.get_session()
+    try:
+        rows = session.query(Link).all()
+        assert len(rows) == 1 and rows[0].id == keeper
+        assert rows[0].local_file == "vids/x.mp4"
+        assert rows[0].favorite is True
+    finally:
+        session.close()
+
+
+def test_merge_transfers_pointer_to_bare_winner(fresh_db):
+    # favorite winner has no file pointer; the loser holds the only one
+    session = db.get_session()
+    w = _add_link(session, "https://www.redgifs.com/watch/AAA",
+                  post_permalink="/r/s/comments/abc123/t/",
+                  post_title="Titled", favorite=True)
+    _add_link(session, "https://v.redd.it/xyz",
+              post_permalink="/r/s/comments/abc123/t/",
+              local_file="vids/x.mp4", tags="a, b", creator="c1")
+    session.close()
+    groups = scanner.find_dupe_groups()
+    assert len(groups) == 1
+    assert groups[0]["winner_id"] == w  # favorite beats file pointer
+    scanner.merge_dupe_group(w, [l.id for l in groups[0]["links"]])
+    session = db.get_session()
+    try:
+        rows = session.query(Link).all()
+        assert len(rows) == 1 and rows[0].id == w
+        assert rows[0].local_file == "vids/x.mp4"  # pointer transferred
+        assert rows[0].tags == "a, b" and rows[0].creator == "c1"
+    finally:
+        session.close()
+
+
+def test_purge_skips_file_backed_rows(fresh_db):
+    from fastapi.testclient import TestClient
+    session = db.get_session()
+    _add_link(session, "https://i.redd.it/kept1.jpg", alive=False,
+              post_title="Kept file", local_file="pics/k.jpg")
+    _add_link(session, "https://i.redd.it/kept2.jpg", alive=False,
+              post_title="Kept done", jd_status="done")
+    _add_link(session, "https://i.redd.it/gone.jpg", alive=False,
+              post_title="Gone")
+    session.close()
+    result = scanner.purge_graveyard()
+    assert result == {"deleted": 1, "skipped": 2}
+    with TestClient(app) as client:
+        r = client.get("/graveyard")
+        assert "Kept file" in r.text and "Kept done" in r.text
+        assert "Gone" not in r.text
+        r = client.post("/graveyard/purge")
+        assert r.status_code in (200, 303)
+        r = client.get("/graveyard?deleted=1&skipped=2")
+        assert "Purged 1 dead link(s)" in r.text
+        assert "Kept 2 with downloaded files" in r.text

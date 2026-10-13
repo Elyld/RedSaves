@@ -524,13 +524,16 @@ as v.redd.it — or the same file under two URL forms. {len(groups)} group{'s' i
     return layout("Dupes", body, "media")
 
 
-def graveyard_page(links) -> str:
+def graveyard_page(links, deleted=None, skipped=None) -> str:
     """Dead links, with bulk purge."""
     rows = []
     for link in links:
         title = esc(link.post_title or link.url)
+        kept = ""
+        if (link.local_file or "") or (link.jd_status or "") == "done":
+            kept = ' <span class="mbadge local">📁 kept</span>'
         rows.append(
-            f"<tr><td>{title}<br><span class='dim mono'>{esc(link.url[:80])}</span></td>"
+            f"<tr><td>{title}{kept}<br><span class='dim mono'>{esc(link.url[:80])}</span></td>"
             f"<td>{esc(link.author or '—')}</td>"
             f"<td class='dim nowrap'>{fmt_dt(link.checked_at)}</td>"
             f"<td><form method='post' action='/graveyard/delete/{link.id}'>"
@@ -540,15 +543,22 @@ def graveyard_page(links) -> str:
     if links:
         purge = f"""
 <form method="post" action="/graveyard/purge" class="form"
-      onsubmit="return confirm('Delete all {len(links)} dead links from the library?')">
-  <button type="submit" class="bigbtn danger">🪦 Purge all dead ({len(links)})</button>
-  <span class="dim">Removes the library rows only — files JDownloader already
-  grabbed stay on disk.</span>
+      onsubmit="return confirm('Delete dead links from the library? Rows with a downloaded file are always kept.')">
+  <button type="submit" class="bigbtn danger">🪦 Purge dead ({len(links)})</button>
+  <span class="dim">Removes the library rows only — and never a row with a
+  matched local file or a finished JDownloader download. Files on disk are
+  untouched either way.</span>
 </form>"""
+    result_line = ""
+    if deleted is not None:
+        result_line = (f'<p class="okline">✓ Purged {deleted} dead link(s).'
+                       + (f' Kept {skipped} with downloaded files.' if skipped else '')
+                       + '</p>')
     body = f"""
 <h1>Graveyard</h1>
 <p class="dim">Links the dead-link check found gone (deleted posts, pulled videos).
 {len(links)} total. Run <b>🩺 Check dead links</b> on the Media page to refresh this list.</p>
+{result_line}
 {purge}
 <table class="tbl">
 <tr><th>Link</th><th>Author</th><th>Checked</th><th></th></tr>

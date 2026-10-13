@@ -13,6 +13,9 @@ gives it a real history database, a dashboard, and its own scheduler.
   (matches every link against JDownloader's download list + linkgrabber in the
   background, exact-URL plus slug/id fallback matching — ⬇ downloading /
   ⏳ queued / ✗ JD failed badges).
+- **v2.13.0** also hardens deletes: dupe merge folds file pointers, stars, and
+  best stats into the winner before deleting; graveyard purge never removes a
+  row with a downloaded file (skipped + reported).
 - **v2.12.0** — Pictures are first-class media (`.jpg`/`.png`/`.webp`/`.jpeg`
   now collected, viewable, and matched to local downloads — previously only
   `.gif`/`.mp4`/redgifs/v.redd.it were picked up); **🧹 Dupes** detector

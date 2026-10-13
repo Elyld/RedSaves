@@ -463,26 +463,24 @@ def dupes_merge_all():
 
 
 @app.get("/graveyard", response_class=HTMLResponse)
-def graveyard():
+def graveyard(deleted: int = Query(default=None),
+              skipped: int = Query(default=None)):
     session = get_session()
     try:
         links = (session.query(Link).filter(Link.alive.is_(False))
                  .order_by(desc(Link.checked_at)).all())
-        return pages.graveyard_page(links)
+        return pages.graveyard_page(links, deleted=deleted, skipped=skipped)
     finally:
         session.close()
 
 
 @app.post("/graveyard/purge")
 def graveyard_purge():
-    session = get_session()
-    try:
-        (session.query(Link).filter(Link.alive.is_(False))
-         .delete(synchronize_session=False))
-        session.commit()
-    finally:
-        session.close()
-    return RedirectResponse("/graveyard", status_code=303)
+    """Bulk-delete dead links, except ones backed by a file we have."""
+    result = scan_mod.purge_graveyard()
+    return RedirectResponse(
+        f"/graveyard?deleted={result['deleted']}&skipped={result['skipped']}",
+        status_code=303)
 
 
 @app.post("/graveyard/delete/{link_id}")

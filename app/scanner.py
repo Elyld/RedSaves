@@ -1523,16 +1523,64 @@ def find_dupe_groups() -> list:
 
 
 def merge_dupe_group(winner_id: int, loser_ids: list) -> int:
-    """Delete the losers of one dupe group. Returns the number deleted."""
+    """Fold loser metadata into the winner, then delete the losers.
+
+    A dupe row can hold the only pointer to a downloaded file (or the only
+    ★), so the winner inherits anything it lacks before anything is deleted
+    — merging never loses a file pointer, a favorite, or the best stats."""
     losers = [i for i in loser_ids if i != winner_id]
     if not losers:
         return 0
     session = get_session()
     try:
+        winner = session.query(Link).filter(Link.id == winner_id).first()
+        loser_rows = session.query(Link).filter(Link.id.in_(losers)).all()
+        if winner is not None:
+            for loser in loser_rows:
+                for field in ('local_file', 'thumbnail', 'tags', 'creator',
+                              'flair', 'post_title', 'post_permalink', 'domain',
+                              'author', 'subreddit', 'jd_status'):
+                    if not getattr(winner, field, None) and getattr(loser, field, None):
+                        setattr(winner, field, getattr(loser, field))
+                for field in ('score', 'num_comments', 'views', 'likes',
+                              'file_size'):
+                    wv, lv = getattr(winner, field, None), getattr(loser, field, None)
+                    if lv and (not wv or lv > wv):
+                        setattr(winner, field, lv)
+                for field in ('duration', 'upvote_ratio', 'checked_at'):
+                    if (getattr(winner, field, None) is None
+                            and getattr(loser, field, None) is not None):
+                        setattr(winner, field, getattr(loser, field))
+                if not winner.alive and loser.alive:
+                    winner.alive = loser.alive
+                if loser.favorite:
+                    winner.favorite = True
         deleted = (session.query(Link)
                    .filter(Link.id.in_(losers))
                    .delete(synchronize_session=False))
         session.commit()
         return deleted
+    finally:
+        session.close()
+
+
+def purge_graveyard() -> dict:
+    """Delete dead links — but never a row backed by a file we actually have.
+    A dead URL with a matched local file or jd_status='done' is skipped and
+    reported, so purging can't orphan downloads. Returns
+    {'deleted': n, 'skipped': n}."""
+    session = get_session()
+    try:
+        dead = session.query(Link).filter(Link.alive.is_(False)).all()
+        protected = [l.id for l in dead
+                     if (l.local_file or '') or (l.jd_status or '') == 'done']
+        doomed = [l.id for l in dead if l.id not in protected]
+        if doomed:
+            session.query(Link).filter(Link.id.in_(doomed)).delete(
+                synchronize_session=False)
+            session.commit()
+        log_info(f"Graveyard purge: deleted {len(doomed)}, "
+                 f"skipped {len(protected)} (file on disk / downloaded).")
+        return {"deleted": len(doomed), "skipped": len(protected)}
     finally:
         session.close()
