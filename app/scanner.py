@@ -246,6 +246,76 @@ def apply_enrichment(link_id: int, meta: dict) -> None:
         session.close()
 
 
+def _iter_all_saved_posts(config: ScanConfig, token):
+    """Yield raw saved-post data dicts, paging through the *entire* saved
+    list via the `after` cursor (100 per page). Stops on error."""
+    headers = {'Authorization': f'bearer {token}', 'User-Agent': 'RedSaves v2.4'}
+    after = None
+    pages = 0
+    while True:
+        params = {'limit': 100}
+        if after:
+            params['after'] = after
+        try:
+            response = requests.get(
+                f'https://oauth.reddit.com/user/{config.reddit_username}/saved',
+                params=params, headers=headers, timeout=REQUEST_TIMEOUT)
+        except Exception as e:
+            log_error(f"Saved-scan: error fetching page {pages + 1}: {e}")
+            return
+        if response.status_code != 200:
+            log_error(f"Saved-scan: HTTP {response.status_code} on page {pages + 1}")
+            return
+        data = (response.json() or {}).get('data') or {}
+        children = data.get('children') or []
+        pages += 1
+        for child in children:
+            yield (child or {}).get('data') or {}
+        after = data.get('after')
+        if not after or not children:
+            break
+        _throttle()
+    log_info(f"Saved-scan: paged through {pages} saved page(s).")
+
+
+def _run_deep_match(config: ScanConfig, token) -> int:
+    """Phase 2 of enrichment: match still-title-less links against the full
+    saved-posts list by canonical URL. Never adds new links — metadata
+    backfill only. Returns the number matched."""
+    remaining = titleless_links()
+    want = {}
+    for link_id, url in remaining:
+        want.setdefault(_canonicalize_url(url), link_id)
+    if not want:
+        return 0
+    matched = 0
+    scanned = 0
+    for post in _iter_all_saved_posts(config, token):
+        scanned += 1
+        url = post.get('url', '') or ''
+        if not any(ext in url for ext in MEDIA_MARKERS):
+            continue
+        link_id = want.pop(_canonicalize_url(url), None)
+        if link_id is None:
+            continue
+        apply_enrichment(link_id, {
+            'post_title': post.get('title', ''),
+            'post_permalink': post.get('permalink', ''),
+            'subreddit': (post.get('subreddit') or ''),
+            'author': (post.get('author') or ''),
+            'created_utc': post.get('created_utc'),
+        })
+        matched += 1
+        _enrich_progress['found'] += 1
+        _enrich_progress['processed'] += 1
+        if not want:
+            break
+    _enrich_progress['skipped'] = len(want)
+    log_info(f"Saved-scan: matched {matched} link(s) from {scanned} saved post(s); "
+             f"{len(want)} still without metadata.")
+    return matched
+
+
 def run_enrich(config: ScanConfig | None = None) -> bool:
     """Run metadata enrichment to completion. Returns False immediately when
     another enrichment is already running (never two concurrently)."""
@@ -261,8 +331,8 @@ def run_enrich(config: ScanConfig | None = None) -> bool:
 
 def _run_enrich(config: ScanConfig | None) -> None:
     global _enrich_progress
-    _enrich_progress = {"running": True, "processed": 0, "total": 0,
-                        "found": 0, "skipped": 0}
+    _enrich_progress = {"running": True, "phase": "lookup", "processed": 0,
+                        "total": 0, "found": 0, "skipped": 0}
     try:
         set_enrich_note("")  # clear any previous abort note; re-set below if needed
         if config is None:
@@ -290,9 +360,17 @@ def _run_enrich(config: ScanConfig | None) -> None:
                 _enrich_progress["skipped"] += 1
             _enrich_progress["processed"] += 1
             _throttle()
+        # Phase 2: sweep the full saved list for anything the lookup missed.
+        _enrich_progress["phase"] = "saved-scan"
+        still_missing = titleless_count()
+        _enrich_progress["total"] = still_missing
+        _enrich_progress["processed"] = 0
+        if still_missing:
+            log_info(f"Enrich phase 2: scanning saved posts for "
+                     f"{still_missing} unmatched link(s).")
+            _run_deep_match(config, token)
         log_info(f"Enrich finished: {_enrich_progress['found']} enriched, "
-                 f"{_enrich_progress['skipped']} skipped, "
-                 f"of {_enrich_progress['total']} processed.")
+                 f"{_enrich_progress['skipped']} still missing metadata.")
     finally:
         _enrich_progress["running"] = False
 
