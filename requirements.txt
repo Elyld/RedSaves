@@ -5,4 +5,4 @@ sqlalchemy>=2.0
 apscheduler>=3.10
 requests>=2.31
 python-dotenv>=1.0
-myjdapi>=1.2
+myjdapi>=1.1
