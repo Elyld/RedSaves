@@ -27,6 +27,12 @@ _api_key = ""
 
 
 def log(msg):
+    # stdout -> Stash logs this as Info
+    print(f"[redsaves] {msg}", flush=True)
+
+
+def log_err(msg):
+    # stderr -> Stash logs this as Error; reserve for real failures
     print(f"[redsaves] {msg}", file=sys.stderr, flush=True)
 
 
@@ -44,9 +50,9 @@ def gql_raw(query, variables=None):
         with urllib.request.urlopen(req, timeout=30) as resp:
             return json.loads(resp.read().decode("utf-8", "replace"))
     except urllib.error.HTTPError as e:
-        log(f"GraphQL HTTP {e.code}")
+        log_err(f"GraphQL HTTP {e.code}")
     except Exception as e:  # timeouts, connection refused, ...
-        log(f"GraphQL error: {e}")
+        log_err(f"GraphQL error: {e}")
     return None
 
 
@@ -55,7 +61,7 @@ def gql(query, variables=None):
     if not body:
         return None
     if body.get("errors"):
-        log(f"GraphQL errors: {json.dumps(body['errors'])[:300]}")
+        log_err(f"GraphQL errors: {json.dumps(body['errors'])[:300]}")
         return None
     return body.get("data")
 
@@ -106,6 +112,52 @@ mutation TagCreate($name: String!) {
 
 CONFIGURATION = "query { configuration { plugins } }"
 
+ALL_TAGS = """
+query AllTags {
+  findTags(filter: {per_page: -1}) {
+    tags { id name aliases }
+  }
+}"""
+
+ALL_PERFORMERS = """
+query AllPerformers {
+  findPerformers(filter: {per_page: -1}) {
+    performers { id name aliases }
+  }
+}"""
+
+
+class AliasIndex:
+    """Canonical id lookup by exact name or alias (case-insensitive).
+
+    Loaded once at startup so tag/performer creation is never attempted for
+    a name Stash already knows as an alias — those mutations always fail and
+    spam the log.
+    """
+
+    def __init__(self):
+        self._map = {}
+
+    def load(self, kind):
+        query = ALL_TAGS if kind == "tag" else ALL_PERFORMERS
+        outer = "findTags" if kind == "tag" else "findPerformers"
+        inner = "tags" if kind == "tag" else "performers"
+        data = gql(query)
+        for t in ((data or {}).get(outer) or {}).get(inner) or []:
+            self._map[t["name"].lower()] = t["id"]
+            for a in t.get("aliases") or []:
+                self._map.setdefault(a.lower(), t["id"])
+
+    def get(self, name):
+        return self._map.get((name or "").lower())
+
+    def add(self, name, id_):
+        self._map[(name or "").lower()] = id_
+
+
+_tag_index = AliasIndex()
+_performer_index = AliasIndex()
+
 
 def plugin_settings():
     """Settings from Stash (Settings -> Plugins), with an optional local
@@ -118,14 +170,14 @@ def plugin_settings():
             plugins = json.loads(plugins)
         settings = plugins.get(PLUGIN_ID) or {}
     except Exception as e:
-        log(f"could not read plugin settings: {e}")
+        log_err(f"could not read plugin settings: {e}")
     try:
         with open("config.json", encoding="utf-8") as f:
             settings.update(json.load(f))
     except OSError:
         pass
     except Exception as e:
-        log(f"bad config.json: {e}")
+        log_err(f"bad config.json: {e}")
     return settings
 
 
@@ -147,24 +199,38 @@ def _create_named(create_query, name, kind):
         if kind == "tag":
             return find_or_create_tag(canonical)
         return find_or_create_performer(canonical)
-    log(f"{kind}Create failed for '{name}': {errs[:200]}")
+    log_err(f"{kind}Create failed for '{name}': {errs[:200]}")
     return None
 
 
 def find_or_create_performer(name):
+    pid = _performer_index.get(name)
+    if pid:
+        return pid
     data = gql(FIND_PERFORMER, {"name": name})
     performers = ((data or {}).get("findPerformers") or {}).get("performers") or []
     if performers:
+        _performer_index.add(name, performers[0]["id"])
         return performers[0]["id"]
-    return _create_named(PERFORMER_CREATE, name, "performer")
+    pid = _create_named(PERFORMER_CREATE, name, "performer")
+    if pid:
+        _performer_index.add(name, pid)
+    return pid
 
 
 def find_or_create_tag(name):
+    tid = _tag_index.get(name)
+    if tid:
+        return tid
     data = gql(FIND_TAG, {"name": name})
     tags = ((data or {}).get("findTags") or {}).get("tags") or []
     if tags:
+        _tag_index.add(name, tags[0]["id"])
         return tags[0]["id"]
-    return _create_named(TAG_CREATE, name, "tag")
+    tid = _create_named(TAG_CREATE, name, "tag")
+    if tid:
+        _tag_index.add(name, tid)
+    return tid
 
 
 # --- RedSaves --------------------------------------------------------------------
@@ -178,7 +244,7 @@ def redsaves_lookup(base_url, filename):
         with urllib.request.urlopen(url, timeout=15) as resp:
             meta = json.loads(resp.read().decode("utf-8", "replace"))
     except Exception as e:
-        log(f"RedSaves lookup failed for {filename}: {e}")
+        log_err(f"RedSaves lookup failed for {filename}: {e}")
         return None
     return meta if meta.get("found") else None
 
@@ -302,9 +368,12 @@ def main():
     path_prefix = (settings.get("path_prefix") or "").strip()
     dry_run = bool(settings.get("dry_run"))
     if not base_url:
-        log("Set 'RedSaves URL' in the plugin settings "
+        log_err("Set 'RedSaves URL' in the plugin settings "
             "(e.g. http://192.168.1.10:4003).")
         return
+
+    _tag_index.load("tag")
+    _performer_index.load("performer")
 
     if kind == "hook":
         scene_id = payload.get("id")
