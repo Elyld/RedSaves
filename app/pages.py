@@ -94,6 +94,7 @@ def dashboard_page(ctx: dict) -> str:
     body = f"""
 <h1>Dashboard</h1>
 {upvoted_banner}
+{f'<div class="warnbox"><p>ℹ️ {esc(ctx.get("enrich_note"))}</p></div>' if ctx.get("enrich_note") else ""}
 <div class="cards">
   <div class="card"><div class="k">Last run</div><div class="v">{last_line}</div></div>
   <div class="card"><div class="k">Next scheduled</div><div class="v small">{next_line}</div></div>
@@ -110,7 +111,8 @@ def dashboard_page(ctx: dict) -> str:
     return layout("Dashboard", body, "dash")
 
 
-def history_page(links, q: str, page: int, pages: int, imported=None, skipped=None) -> str:
+def history_page(links, q: str, page: int, pages: int, imported=None, skipped=None,
+                 missing: int = 0, enrich: dict | None = None) -> str:
     rows = []
     for link in links:
         title = esc(link.post_title or "(no title)")
@@ -138,9 +140,36 @@ def history_page(links, q: str, page: int, pages: int, imported=None, skipped=No
     if imported is not None:
         import_line = (f'<p class="okline">✓ Imported {imported} link(s), '
                        f'skipped {skipped or 0} already known.</p>')
+    enrich_block = ""
+    enrich_state = enrich or {}
+    if enrich_state.get("running"):
+        enrich_block = f"""
+<div class="infobox">
+  <p>⏳ Enriching missing info… <span id="enrich-counts">{enrich_state.get("processed", 0)}/{enrich_state.get("total", 0)}, {enrich_state.get("found", 0)} found</span></p>
+  <button class="bigbtn" disabled>✨ Enrich missing info</button>
+</div>
+<script>
+(function () {{
+  var iv = setInterval(function () {{
+    fetch('/api/enrich-status').then(function (r) {{ return r.json(); }}).then(function (s) {{
+      var el = document.getElementById('enrich-counts');
+      if (el) el.textContent = s.processed + '/' + s.total + ', ' + s.found + ' found';
+      if (!s.running) {{ clearInterval(iv); location.reload(); }}
+    }}).catch(function () {{}});
+  }}, 5000);
+}})();
+</script>"""
+    elif missing:
+        enrich_block = f"""
+<form method="post" action="/history/enrich" class="form">
+  <button type="submit" class="bigbtn">✨ Enrich missing info ({missing})</button>
+  <span class="dim">Looks up titles, authors and subreddits on Reddit — one request
+  per 1.2s, in the background. Existing titles are never overwritten.</span>
+</form>"""
     body = f"""
 <h1>History</h1>
 {import_line}
+{enrich_block}
 <form method="get" action="/history" class="searchbar">
   <input type="search" name="q" value="{esc(q)}" placeholder="Search title, URL, author, subreddit…">
   <button type="submit">Search</button>
