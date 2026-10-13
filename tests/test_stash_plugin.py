@@ -93,3 +93,35 @@ def test_find_or_create_tag_create_failure_returns_none(monkeypatch):
     monkeypatch.setattr(redsaves, "gql_raw",
                         lambda q, v=None: {"errors": [{"message": "boom"}]})
     assert redsaves.find_or_create_tag("Nope") is None
+
+
+def test_alias_index_loads_names_and_aliases(monkeypatch):
+    import redsaves
+
+    def fake_gql(query, variables=None):
+        if "AllTags" in query:
+            return {"findTags": {"tags": [
+                {"id": "t1", "name": "Smiling", "aliases": ["Smile"]},
+            ]}}
+        return {"findPerformers": {"performers": []}}
+
+    monkeypatch.setattr(redsaves, "gql", fake_gql)
+    idx = redsaves.AliasIndex()
+    idx.load("tag")
+    assert idx.get("Smile") == "t1"
+    assert idx.get("smiling") == "t1"
+    assert idx.get("Nope") is None
+
+
+def test_find_or_create_tag_prefers_index(monkeypatch):
+    import redsaves
+    idx = redsaves.AliasIndex()
+    idx.add("Smile", "t5")
+    monkeypatch.setattr(redsaves, "_tag_index", idx)
+
+    def boom(*a, **k):
+        raise AssertionError("no GraphQL expected")
+
+    monkeypatch.setattr(redsaves, "gql", boom)
+    monkeypatch.setattr(redsaves, "gql_raw", boom)
+    assert redsaves.find_or_create_tag("smile") == "t5"
