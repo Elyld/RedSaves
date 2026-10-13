@@ -481,3 +481,43 @@ def test_deep_match_ignores_nonmedia_and_adds_nothing(fresh_db, monkeypatch, con
     finally:
         session.close()
     assert scanner.get_enrich_progress()["skipped"] == 1
+
+
+def test_enrich_aborts_lookup_phase_on_repeated_403(fresh_db, monkeypatch, config, token_ok):
+    """Systematic 403s abort phase 1 after 3 links; the saved-scan still runs."""
+    session = db.get_session()
+    ids = [_add_link(session, f"https://v.redd.it/u{i:06d}/CMAF_1080.mp4") for i in range(5)]
+    session.close()
+
+    info_calls = []
+
+    def fake_get(url, params=None, headers=None, timeout=None):
+        resp = Mock()
+        if url.endswith("/api/info"):
+            info_calls.append((params or {}).get("url"))
+            resp.status_code = 403
+            resp.json.return_value = {}
+        elif url.endswith("/saved"):
+            resp.status_code = 200
+            # saved scan matches the 4th link via its bare-ID post
+            resp.json.return_value = {"data": {
+                "children": [{"data": _saved_post("https://v.redd.it/u000003")}],
+                "after": None}}
+        else:
+            raise AssertionError(url)
+        return resp
+
+    monkeypatch.setattr(scanner.requests, "get", fake_get)
+    _no_throttle(monkeypatch)
+
+    scanner.run_enrich(config)
+
+    # phase 1 stopped after 3 refused links instead of burning 5 links x variants
+    assert len(info_calls) == 3
+    session = db.get_session()
+    try:
+        row = session.query(Link).filter(Link.id == ids[3]).first()
+        assert row.post_title == "Saved title"  # phase 2 still did its job
+    finally:
+        session.close()
+    assert "403" in scanner.get_enrich_note()
