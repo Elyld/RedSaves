@@ -28,7 +28,10 @@ knows the exact post each file came from.
   Stash scans. Files RedSaves doesn't know are skipped silently.
 - **Existing library:** Settings → Tasks → Plugin Tasks → **Backfill from
   RedSaves** → Run. Every processed scene gets a `RedSaves` tag, so re-runs
-  only pick up new ones.
+  only pick up new ones. Set **Only this directory** in the plugin settings
+  first if you only want one folder covered (use the path as seen inside
+  the Stash container, e.g. `/data/reddit`) — the new-scan hook respects it
+  too.
 
 ## Manual config
 
