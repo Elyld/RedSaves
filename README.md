@@ -8,6 +8,13 @@ gives it a real history database, a dashboard, and its own scheduler.
 
 ## Changelog
 
+- **v2.14.0** — Stash integration: new `GET /api/stash/lookup?filename=…`
+  endpoint (title, performer, tags, URL, rating, date for any file in the
+  library) plus a Stash plugin (`stash-plugin/redsaves/`) — a
+  `Scene.Create.Post` hook fills new scenes' metadata from RedSaves, and a
+  "Backfill from RedSaves" task covers the existing library. Never touches
+  files, metadata only, stdlib-only Python. See `stash-plugin/redsaves/`
+  README for install.
 - **v2.13.0** — Post flair + upvote ratio (free in the Reddit payload — flair
   badges on cards, "97% upvoted" in the player); **🔄 Sync JD status** button
   (matches every link against JDownloader's download list + linkgrabber in the

@@ -260,3 +260,49 @@ def test_purge_skips_file_backed_rows(fresh_db):
         r = client.get("/graveyard?deleted=1&skipped=2")
         assert "Purged 1 dead link(s)" in r.text
         assert "Kept 2 with downloaded files" in r.text
+
+
+# --- stash lookup endpoint ----------------------------------------------------------
+
+def test_stash_lookup_exact_local_file(fresh_db):
+    from fastapi.testclient import TestClient
+    session = db.get_session()
+    _add_link(session, "https://www.redgifs.com/watch/AbcXyz",
+              post_title="Great clip", author="poster1", creator="creator1",
+              subreddit="gifs", flair="OC", tags="funny, loop", score=321,
+              post_permalink="/r/gifs/comments/abc123/t/", favorite=True,
+              local_file="vids/AbcXyz.mp4",
+              sent_at=datetime(2026, 10, 1, 12, 0, 0))
+    _add_link(session, "https://i.redd.it/other.jpg", post_title="Other")
+    session.close()
+    with TestClient(app) as client:
+        r = client.get("/api/stash/lookup", params={"filename": "AbcXyz.mp4"})
+        assert r.status_code == 200
+        d = r.json()
+        assert d["found"] is True
+        assert d["title"] == "Great clip"
+        assert d["performer"] == "creator1"  # creator preferred over author
+        assert "gifs" in d["tags"] and "OC" in d["tags"]
+        assert "funny" in d["tags"]
+        assert d["url"] == "https://www.reddit.com/r/gifs/comments/abc123/t/"
+        assert d["rating100"] == 100
+        assert d["date"] == "2026-10-01"
+        assert "u/poster1" in d["details"]
+
+
+def test_stash_lookup_key_fallback_and_miss(fresh_db):
+    from fastapi.testclient import TestClient
+    session = db.get_session()
+    _add_link(session, "https://v.redd.it/vid9/DASH_720.mp4",
+              post_title="Clip", author="bob")
+    session.close()
+    with TestClient(app) as client:
+        # no local_file, but the v.redd.it id matches the filename stem
+        r = client.get("/api/stash/lookup", params={"filename": "vid9.mp4"})
+        assert r.json()["found"] is True
+        assert r.json()["performer"] == "bob"  # author fallback
+        assert r.json()["rating100"] is None
+        r = client.get("/api/stash/lookup", params={"filename": "nope.mp4"})
+        assert r.json() == {"found": False}
+        r = client.get("/api/stash/lookup", params={"filename": ".mp4"})
+        assert r.json() == {"found": False}
