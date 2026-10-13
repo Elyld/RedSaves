@@ -7,14 +7,15 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from fastapi import FastAPI, Form, HTTPException, Query, Request
+from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import desc, func, or_
 
 from app import pages, scheduler
 from app import scanner as scan_mod
-from app.database import get_session, init_db
+from app import stats
+from app.database import DATA_DIR, get_session, init_db
 from app.models import Link, Run
 from app.version import APP_NAME, VERSION
 
@@ -66,7 +67,8 @@ PAGE_SIZE = 50
 
 
 @app.get("/history", response_class=HTMLResponse)
-def history(q: str = Query(default=""), page: int = Query(default=1, ge=1)):
+def history(q: str = Query(default=""), page: int = Query(default=1, ge=1),
+            imported: int = Query(default=None), skipped: int = Query(default=None)):
     session = get_session()
     try:
         query = session.query(Link)
@@ -74,15 +76,72 @@ def history(q: str = Query(default=""), page: int = Query(default=1, ge=1)):
             like = f"%{q}%"
             query = query.filter(or_(
                 Link.url.like(like), Link.post_title.like(like),
-                Link.subreddit.like(like)))
+                Link.subreddit.like(like), Link.author.like(like)))
         total = query.count()
         pages_count = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
         page = min(page, pages_count)
         links = (query.order_by(desc(Link.id))
                  .offset((page - 1) * PAGE_SIZE).limit(PAGE_SIZE).all())
-        return pages.history_page(links, q, page, pages_count)
+        return pages.history_page(links, q, page, pages_count,
+                                  imported=imported, skipped=skipped)
     finally:
         session.close()
+
+
+@app.post("/history/import")
+async def history_import(file: UploadFile = File(...)):
+    """Import a sent_links.txt-format file (one URL per line). Dedupes against
+    existing URLs; inserts the rest as already-sent. Works whether or not the
+    table already has rows (unlike the boot migration's empty-table guard)."""
+    raw = await file.read()
+    urls = [ln.strip() for ln in raw.decode("utf-8", errors="replace").splitlines()
+            if ln.strip()]
+    session = get_session()
+    try:
+        existing = {u for (u,) in session.query(Link.url).all()}
+        imported = skipped = 0
+        now = datetime.now()
+        for url in dict.fromkeys(urls):  # dedupe within the file, keep order
+            if url in existing:
+                skipped += 1
+            else:
+                session.add(Link(url=url, status="sent", sent_at=now, found_at=now))
+                existing.add(url)
+                imported += 1
+        session.commit()
+    finally:
+        session.close()
+    return RedirectResponse(
+        f"/history?imported={imported}&skipped={skipped}", status_code=303)
+
+
+@app.get("/top", response_class=HTMLResponse)
+def top():
+    session = get_session()
+    try:
+        return pages.top_page(
+            stats.top_subreddits(session),
+            stats.top_authors(session),
+            stats.links_per_week(session),
+        )
+    finally:
+        session.close()
+
+
+@app.get("/logs", response_class=HTMLResponse)
+def logs():
+    return pages.logs_view()
+
+
+@app.get("/api/logs")
+def api_logs():
+    """Tail of the run log for the Logs page (last 300 lines)."""
+    log_file = DATA_DIR / "redsaves.log"
+    try:
+        lines = log_file.read_text(errors="replace").splitlines()[-300:]
+    except OSError:
+        lines = []
+    return {"lines": lines}
 
 
 @app.get("/runs", response_class=HTMLResponse)

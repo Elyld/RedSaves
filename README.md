@@ -6,6 +6,14 @@ links to JDownloader, with Pushover notifications. The scan behavior is
 unchanged from the standalone `RedSaves2.0.py` script — the container just
 gives it a real history database, a dashboard, and its own scheduler.
 
+## Changelog
+
+- **v2.6.0** — JDownloader auto-start (downloads begin immediately), post
+  author captured and shown in History, Leaderboard page (top subreddits /
+  posters / weekly volume), Logs page, and sent_links.txt import upload.
+- **v2.5.0** — Container + WebUI with SQLite history database, own scheduler,
+  first-boot sent_links.txt migration.
+
 ## Run it (Dockge)
 
 Copy `dockge-compose.yml` into a new Dockge stack as-is, then fill in the
@@ -74,9 +82,16 @@ to `main` (plus `vX.Y.Z` tags on releases), so Dockge pulls the new build.
   `sent_links.txt` into the volume before first deploy, or place it in
   `/data` on the host bind.
 - **WebUI** — dashboard (last/next run, totals, auth watchdog state, Scan
-  Now button), searchable history, per-run detail, and settings (scan times,
-  notification toggles). Secrets stay in environment variables and are never
-  shown or stored.
+  Now button), searchable history (now with the post author), Top leaderboard
+  (top subreddits, top posters, links per week), per-run detail, run logs
+  viewer, and settings (scan times, notification toggles). Secrets stay in
+  environment variables and are never shown or stored.
+- **JDownloader auto-start** — links are moved from LinkGrabber into the
+  download list right after sending, so downloads begin immediately instead
+  of sitting in the grabber.
+- **History import** — upload a `sent_links.txt` (one URL per line) from the
+  History page to backfill the database; duplicates are skipped and the page
+  reports how many were imported.
 
 ## Local dev
 

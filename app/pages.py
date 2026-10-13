@@ -58,7 +58,9 @@ def layout(title: str, body: str, active: str = "") -> str:
   <nav>
     {nav("/", "Dashboard", "dash")}
     {nav("/history", "History", "history")}
+    {nav("/top", "Top", "top")}
     {nav("/runs", "Runs", "runs")}
+    {nav("/logs", "Logs", "logs")}
     {nav("/settings", "Settings", "settings")}
   </nav>
 </header>
@@ -96,15 +98,17 @@ def dashboard_page(ctx: dict) -> str:
     return layout("Dashboard", body, "dash")
 
 
-def history_page(links, q: str, page: int, pages: int) -> str:
+def history_page(links, q: str, page: int, pages: int, imported=None, skipped=None) -> str:
     rows = []
     for link in links:
         title = esc(link.post_title or "(no title)")
         if link.post_permalink:
             title = f'<a href="https://www.reddit.com{esc(link.post_permalink)}" target="_blank" rel="noopener">{title}</a>'
+        author = f"u/{esc(link.author)}" if link.author else "—"
         rows.append(
             f"<tr><td>{status_badge(link.status)}</td>"
             f"<td>{title}<br><span class='dim mono'>{esc(link.url[:90])}</span></td>"
+            f"<td>{author}</td>"
             f"<td>{esc(link.subreddit or '—')}</td>"
             f"<td class='nowrap'>{fmt_dt(link.sent_at or link.found_at)}</td></tr>"
         )
@@ -116,17 +120,30 @@ def history_page(links, q: str, page: int, pages: int) -> str:
         if page < pages:
             pager += f'<a href="/history?q={esc(q)}&page={page + 1}">Next →</a>'
         pager += "</div>"
+    import_line = ""
+    if imported is not None:
+        import_line = (f'<p class="okline">✓ Imported {imported} link(s), '
+                       f'skipped {skipped or 0} already known.</p>')
     body = f"""
 <h1>History</h1>
+{import_line}
 <form method="get" action="/history" class="searchbar">
-  <input type="search" name="q" value="{esc(q)}" placeholder="Search title, URL, subreddit…">
+  <input type="search" name="q" value="{esc(q)}" placeholder="Search title, URL, author, subreddit…">
   <button type="submit">Search</button>
 </form>
 <table class="tbl">
-<tr><th>Status</th><th>Link</th><th>Subreddit</th><th>Sent</th></tr>
-{''.join(rows) if rows else '<tr><td colspan="4" class="dim">Nothing here yet.</td></tr>'}
+<tr><th>Status</th><th>Link</th><th>Author</th><th>Subreddit</th><th>Sent</th></tr>
+{''.join(rows) if rows else '<tr><td colspan="5" class="dim">Nothing here yet.</td></tr>'}
 </table>
 {pager}
+<h2>Import history</h2>
+<p class="dim">Upload a <span class="mono">sent_links.txt</span> (one URL per line) to
+backfill the database — e.g. from the old standalone script. Duplicates are
+skipped.</p>
+<form method="post" action="/history/import" enctype="multipart/form-data" class="form">
+  <input type="file" name="file" accept=".txt,text/plain" required>
+  <button type="submit" class="bigbtn">Import</button>
+</form>
 """
     return layout("History", body, "history")
 
@@ -198,3 +215,79 @@ def settings_page(s: dict, saved: bool) -> str:
 </form>
 """
     return layout("Settings", body, "settings")
+
+
+def logs_view() -> str:
+    body = """
+<h1>Logs</h1>
+<p class="dim">Last 300 lines of <span class="mono">redsaves.log</span> (newest at bottom).
+The log rotates at 1 MB — the previous chunk is kept as <span class="mono">redsaves.log.1</span>.</p>
+<div class="logbar">
+  <button id="log-refresh" class="btn">Refresh now</button>
+  <span class="dim">auto-refreshes every 15s</span>
+</div>
+<pre id="logview" class="logview">loading…</pre>
+<script>
+async function loadLogs() {
+  try {
+    const r = await fetch('/api/logs');
+    const d = await r.json();
+    const el = document.getElementById('logview');
+    el.textContent = d.lines.length ? d.lines.join('\\n') : '(log is empty)';
+    el.scrollTop = el.scrollHeight;
+  } catch (e) {
+    document.getElementById('logview').textContent = 'could not load log: ' + e;
+  }
+}
+document.getElementById('log-refresh').addEventListener('click', loadLogs);
+loadLogs();
+setInterval(loadLogs, 15000);
+</script>
+"""
+    return layout("Logs", body, "logs")
+
+
+def top_page(subreddits, authors, weekly) -> str:
+    def rank_rows(items, prefix=""):
+        rows = []
+        for i, (name, count) in enumerate(items, 1):
+            rows.append(
+                f"<tr><td class='dim'>#{i}</td><td>{prefix}{esc(name)}</td>"
+                f"<td>{count}</td></tr>"
+            )
+        return "".join(rows) or '<tr><td colspan="3" class="dim">Nothing yet.</td></tr>'
+
+    max_week = max((c for _, c in weekly), default=0)
+    bars = []
+    for label, count in weekly:
+        pct = round(count / max_week * 100) if max_week else 0
+        bars.append(
+            f"<div class='bar-row'><span class='bar-label'>{esc(label)}</span>"
+            f"<div class='bar-track'><div class='bar-fill' style='width:{pct}%'></div></div>"
+            f"<span class='bar-count'>{count}</span></div>"
+        )
+    body = f"""
+<h1>Top</h1>
+<div class="topgrid">
+  <div>
+    <h2>Top subreddits</h2>
+    <table class="tbl">
+    <tr><th></th><th>Subreddit</th><th>Links sent</th></tr>
+    {rank_rows(subreddits, prefix="r/")}
+    </table>
+  </div>
+  <div>
+    <h2>Top posters</h2>
+    <table class="tbl">
+    <tr><th></th><th>Author</th><th>Links sent</th></tr>
+    {rank_rows(authors, prefix="u/")}
+    </table>
+  </div>
+</div>
+<h2>Links sent per week</h2>
+<p class="dim">Last 8 weeks, sent links only.</p>
+<div class="bars">
+{''.join(bars)}
+</div>
+"""
+    return layout("Top", body, "top")

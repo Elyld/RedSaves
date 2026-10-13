@@ -19,6 +19,7 @@ class Link(Base):
     post_title = Column(Text, default="")
     post_permalink = Column(Text, default="")
     subreddit = Column(String(128), default="")
+    author = Column(String(128), default="")
     found_at = Column(DateTime, nullable=True)
     sent_at = Column(DateTime, nullable=True)
     status = Column(String(16), nullable=False, default="sent")

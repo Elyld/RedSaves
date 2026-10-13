@@ -220,6 +220,7 @@ def extract_media_links(saved_posts):
                     'post_title': data.get('title', ''),
                     'post_permalink': data.get('permalink', ''),
                     'subreddit': (data.get('subreddit') or ''),
+                    'author': (data.get('author') or ''),
                 })
     except Exception as e:
         log_error(f"Error extracting media links: {e}")
@@ -257,6 +258,8 @@ def mark_links(items, status: str, run_id: int | None) -> None:
             if row:
                 row.status = status
                 row.run_id = run_id
+                if item.get('author'):
+                    row.author = item['author']
                 if status == 'sent':
                     row.sent_at = now
                 else:
@@ -267,6 +270,7 @@ def mark_links(items, status: str, run_id: int | None) -> None:
                     post_title=item.get('post_title', ''),
                     post_permalink=item.get('post_permalink', ''),
                     subreddit=item.get('subreddit', ''),
+                    author=item.get('author', ''),
                     found_at=now,
                     sent_at=now if status == 'sent' else None,
                     status=status,
@@ -278,6 +282,9 @@ def mark_links(items, status: str, run_id: int | None) -> None:
 
 
 # --- JDownloader --------------------------------------------------------------
+JD_PACKAGE_NAME = "RedditMedia"
+
+
 def send_to_jdownloader(config: ScanConfig, urls) -> int:
     try:
         api = Myjdapi()
@@ -287,10 +294,14 @@ def send_to_jdownloader(config: ScanConfig, urls) -> int:
             response = device.linkgrabber.add_links([{
                 "autostart": True,
                 "links": "\n".join(urls),
-                "packageName": "RedditMedia",
+                "packageName": JD_PACKAGE_NAME,
                 "destinationFolder": config.destination_folder
             }])
             log_info(f"Links sent to JDownloader: {response}")
+            # autostart in addLinks is unreliable: JDownloader parks the links
+            # in LinkGrabber regardless. Move our package(s) to the download
+            # list so they start downloading immediately.
+            _start_grabbed_packages(device)
             return len(urls)  # Return the number of links sent
         else:
             log_error("JDownloader device not found.")
@@ -298,6 +309,23 @@ def send_to_jdownloader(config: ScanConfig, urls) -> int:
     except Exception as e:
         log_error(f"Error sending links to JDownloader: {e}")
         return 0
+
+
+def _start_grabbed_packages(device) -> None:
+    """Move our packages from LinkGrabber into the download list.
+
+    A failed move is only logged: the links were already accepted by
+    JDownloader, so they still count as sent (retrying would duplicate them).
+    """
+    try:
+        packages = device.linkgrabber.query_packages() or []
+        ids = [p.get("uuid") for p in packages
+               if p.get("name") == JD_PACKAGE_NAME and p.get("uuid")]
+        if ids:
+            device.linkgrabber.move_to_downloadlist([], ids)
+            log_info(f"Moved {len(ids)} package(s) to the JDownloader download list.")
+    except Exception as e:
+        log_error(f"Could not auto-start JDownloader downloads: {e}")
 
 
 # --- Pushover -----------------------------------------------------------------

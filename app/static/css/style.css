@@ -107,3 +107,33 @@ h2 { margin-top: 1.8rem; border-bottom: 1px solid var(--line); padding-bottom: 0
 .form input[type="checkbox"] {
   width: 1.1rem; height: 1.1rem; margin-top: 0.15rem; accent-color: var(--accent);
 }
+
+/* Logs page */
+.logbar { display: flex; align-items: center; gap: 0.8rem; margin: 1rem 0; }
+.btn {
+  padding: 0.5rem 1rem; border-radius: 8px; border: 1px solid var(--line);
+  background: var(--panel-2); color: var(--text); cursor: pointer;
+}
+.btn:hover { border-color: var(--accent); color: var(--accent-soft); }
+.logview {
+  background: #14171b; border: 1px solid var(--line); border-radius: 8px;
+  padding: 0.9rem; font-family: ui-monospace, "Cascadia Mono", Menlo, Consolas, monospace;
+  font-size: 0.8rem; line-height: 1.5; color: #c9d1d9;
+  max-height: 60vh; overflow-y: auto; white-space: pre-wrap; word-break: break-all;
+  margin: 0;
+}
+
+/* Leaderboard page */
+.topgrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 1.5rem; }
+.bars { margin-top: 0.5rem; max-width: 640px; }
+.bar-row { display: flex; align-items: center; gap: 0.7rem; margin: 0.35rem 0; }
+.bar-label { width: 4.5rem; color: var(--dim); font-size: 0.85rem; flex-shrink: 0; }
+.bar-track {
+  flex: 1; height: 1.1rem; background: var(--panel-2);
+  border: 1px solid var(--line); border-radius: 4px; overflow: hidden;
+}
+.bar-fill {
+  height: 100%; background: linear-gradient(90deg, #c2145c, var(--accent));
+  box-shadow: 0 0 10px var(--accent-glow); border-radius: 3px;
+}
+.bar-count { width: 2.5rem; text-align: right; font-variant-numeric: tabular-nums; }
