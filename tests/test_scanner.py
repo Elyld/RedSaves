@@ -61,7 +61,7 @@ def test_metadata_captured(fresh_db):
 # --- full scan: happy path ---------------------------------------------------
 def _mock_net(monkeypatch, posts, jd_result):
     monkeypatch.setattr(scanner, "get_access_token", lambda cfg: "tok")
-    monkeypatch.setattr(scanner, "fetch_saved_posts", lambda cfg, tok: posts)
+    monkeypatch.setattr(scanner, "fetch_saved_posts", lambda cfg, tok, limit=None: posts)
     monkeypatch.setattr(scanner, "send_to_jdownloader",
                         lambda cfg, urls: jd_result)
 
@@ -115,7 +115,7 @@ def test_no_media_links_ping_verbatim(fresh_db, config, monkeypatch):
 
 def test_fetch_failure_ping_verbatim(fresh_db, config, monkeypatch):
     monkeypatch.setattr(scanner, "get_access_token", lambda cfg: "tok")
-    monkeypatch.setattr(scanner, "fetch_saved_posts", lambda cfg, tok: None)
+    monkeypatch.setattr(scanner, "fetch_saved_posts", lambda cfg, tok, limit=None: None)
     pushover = Mock()
     monkeypatch.setattr(scanner, "send_pushover_notification", pushover)
     scanner.run_scan(config)

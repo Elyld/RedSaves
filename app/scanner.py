@@ -1,9 +1,11 @@
 """RedSaves scan logic, DB-backed refactor of RedSaves2.0.py (v2.4).
 
-Behavior is deliberately identical to the standalone script:
-- first 25 saved posts only, no pagination
+Behavior is deliberately identical to the standalone script, except where
+the WebUI settings say otherwise:
+- saved posts fetched with ?limit= (post_limit setting, default 25, max 100)
 - media match: '.gif', '.mp4', 'redgifs', 'v.redd.it' as URL substrings
-- within-run URL dedup preserving order
+- optional second source: upvoted posts (include_upvoted setting, default off)
+- within-run URL dedup preserving order, across both sources
 - links are marked sent ONLY when JDownloader accepts them (a failed send
   burns nothing; the links are retried on the next run)
 - 15s timeouts everywhere, rotating 1 MB log file
@@ -13,7 +15,8 @@ Behavior is deliberately identical to the standalone script:
 
 What changed vs the script: sent_links.txt / auth_failures.txt file I/O is
 now SQLite (links / settings tables); every scan writes a runs row; post
-title/permalink/subreddit are captured alongside each URL for the history UI.
+title/permalink/subreddit/author/source are captured alongside each URL for
+the history UI.
 """
 
 from __future__ import annotations
@@ -45,6 +48,13 @@ WATCHDOG_THRESHOLD = 3  # Pushover alert every this many consecutive auth failur
 K_AUTH_FAILURES = "auth_failure_count"
 K_NOTIFY_RESULTS = "notify_results"      # per-run result pings; default on
 K_NOTIFY_WATCHDOG = "notify_watchdog"    # every-3rd auth failure alert; default on
+K_POST_LIMIT = "post_limit"              # posts fetched per source; default 25
+K_INCLUDE_UPVOTED = "include_upvoted"    # also scan upvoted posts; default off
+K_UPVOTED_SCOPE_MISSING = "upvoted_scope_missing"  # dashboard warning flag
+
+POST_LIMIT_DEFAULT = 25
+POST_LIMIT_MIN = 1
+POST_LIMIT_MAX = 100  # Reddit's per-request cap
 
 MEDIA_MARKERS = ('.gif', '.mp4', 'redgifs', 'v.redd.it')
 
@@ -145,6 +155,40 @@ def notifications_enabled(kind: str) -> bool:
     return get_setting_value(key, "1") == "1"
 
 
+def get_post_limit() -> int:
+    """Configured per-source post limit, clamped to Reddit's 1..100 range."""
+    try:
+        return max(POST_LIMIT_MIN, min(POST_LIMIT_MAX,
+                                      int(get_setting_value(K_POST_LIMIT,
+                                                            str(POST_LIMIT_DEFAULT)))))
+    except (TypeError, ValueError):
+        return POST_LIMIT_DEFAULT
+
+
+def set_post_limit(value) -> int:
+    """Validate + clamp a raw limit value, persist it, return the stored int."""
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        n = POST_LIMIT_DEFAULT
+    n = max(POST_LIMIT_MIN, min(POST_LIMIT_MAX, n))
+    set_setting_value(K_POST_LIMIT, str(n))
+    return n
+
+
+def include_upvoted() -> bool:
+    return get_setting_value(K_INCLUDE_UPVOTED, "0") == "1"
+
+
+def upvoted_scope_missing() -> bool:
+    """Dashboard warning flag: the last upvoted fetch failed on auth scope."""
+    return get_setting_value(K_UPVOTED_SCOPE_MISSING, "0") == "1"
+
+
+def set_upvoted_scope_missing(missing: bool) -> None:
+    set_setting_value(K_UPVOTED_SCOPE_MISSING, "1" if missing else "0")
+
+
 # --- Reddit auth watchdog (DB-backed; was auth_failures.txt) -----------------
 def get_auth_failure_count() -> int:
     try:
@@ -189,11 +233,13 @@ def get_access_token(config: ScanConfig):
         return None
 
 
-def fetch_saved_posts(config: ScanConfig, token):
+def fetch_saved_posts(config: ScanConfig, token, limit=None):
+    limit = get_post_limit() if limit is None else limit
     try:
         headers = {'Authorization': f'bearer {token}', 'User-Agent': 'RedSaves v2.4'}
         response = requests.get(
             f'https://oauth.reddit.com/user/{config.reddit_username}/saved',
+            params={'limit': limit},
             headers=headers, timeout=REQUEST_TIMEOUT)
         if response.status_code == 200:
             return response.json()
@@ -206,12 +252,40 @@ def fetch_saved_posts(config: ScanConfig, token):
         return None
 
 
-def extract_media_links(saved_posts):
+def fetch_upvoted_posts(config: ScanConfig, token, limit=None):
+    """Second source: the user's upvoted posts. Returns the listing payload,
+    or None when unavailable. A 401/403 means the refresh token lacks the
+    `history` OAuth scope: the run continues with saved posts only and a
+    dashboard warning flag is set so Josh knows to re-authorize."""
+    limit = get_post_limit() if limit is None else limit
+    try:
+        headers = {'Authorization': f'bearer {token}', 'User-Agent': 'RedSaves v2.4'}
+        response = requests.get(
+            f'https://oauth.reddit.com/user/{config.reddit_username}/upvoted',
+            params={'limit': limit},
+            headers=headers, timeout=REQUEST_TIMEOUT)
+        if response.status_code == 200:
+            set_upvoted_scope_missing(False)
+            return response.json()
+        if response.status_code in (401, 403):
+            set_upvoted_scope_missing(True)
+            log_error("Reddit token lacks the history scope — re-authorize the "
+                      "app to include upvoted posts. Continuing with saved posts only.")
+        else:
+            log_error(f"Failed to fetch upvoted posts for user '{config.reddit_username}'. "
+                      f"Status code: {response.status_code}")
+        return None
+    except Exception as e:
+        log_error(f"Error fetching upvoted posts: {e}")
+        return None
+
+
+def extract_media_links(payload, origin="saved"):
     """Same URL-substring match as the script. Returns a list of dicts
-    (url + post metadata), deduped by URL preserving first-seen order."""
+    (url + post metadata + origin), deduped by URL preserving first-seen order."""
     media_links = []
     try:
-        for post in saved_posts['data']['children']:
+        for post in payload['data']['children']:
             data = post['data']
             url = data.get('url', '')
             if any(ext in url for ext in MEDIA_MARKERS):
@@ -221,6 +295,7 @@ def extract_media_links(saved_posts):
                     'post_permalink': data.get('permalink', ''),
                     'subreddit': (data.get('subreddit') or ''),
                     'author': (data.get('author') or ''),
+                    'source': origin,
                 })
     except Exception as e:
         log_error(f"Error extracting media links: {e}")
@@ -230,6 +305,19 @@ def extract_media_links(saved_posts):
     for item in media_links:
         seen.setdefault(item['url'], item)
     return list(seen.values())
+
+
+def merge_sources(saved_items, upvoted_items):
+    """Merge the two sources, saved first. A URL found in both keeps the
+    first-seen metadata but is marked source='both'."""
+    merged = {}
+    for item in saved_items + upvoted_items:
+        existing = merged.get(item['url'])
+        if existing is None:
+            merged[item['url']] = item
+        elif existing.get('source') != item.get('source'):
+            existing['source'] = 'both'
+    return list(merged.values())
 
 
 def sent_urls() -> set:
@@ -254,12 +342,16 @@ def mark_links(items, status: str, run_id: int | None) -> None:
     session = get_session()
     try:
         for item in items:
+            source = item.get('source') or 'saved'
             row = session.query(Link).filter(Link.url == item['url']).first()
             if row:
                 row.status = status
                 row.run_id = run_id
                 if item.get('author'):
                     row.author = item['author']
+                # a URL previously seen from one source can show up in both
+                if row.source and row.source != source:
+                    row.source = 'both'
                 if status == 'sent':
                     row.sent_at = now
                 else:
@@ -271,6 +363,7 @@ def mark_links(items, status: str, run_id: int | None) -> None:
                     post_permalink=item.get('post_permalink', ''),
                     subreddit=item.get('subreddit', ''),
                     author=item.get('author', ''),
+                    source=source,
                     found_at=now,
                     sent_at=now if status == 'sent' else None,
                     status=status,
@@ -400,9 +493,17 @@ def _run_scan(config: ScanConfig | None) -> int:
     token = get_access_token(config)
     if token:
         reset_auth_failures()
-        saved_posts = fetch_saved_posts(config, token)
+        limit = get_post_limit()
+        saved_posts = fetch_saved_posts(config, token, limit)
         if saved_posts:
-            media_links = extract_media_links(saved_posts)
+            saved_items = extract_media_links(saved_posts, origin="saved")
+            if include_upvoted():
+                upvoted_posts = fetch_upvoted_posts(config, token, limit)
+                upvoted_items = (extract_media_links(upvoted_posts, origin="upvoted")
+                                 if upvoted_posts else [])
+                media_links = merge_sources(saved_items, upvoted_items)
+            else:
+                media_links = saved_items
             if media_links:
                 new_links = filter_new_links(media_links)
                 if new_links:

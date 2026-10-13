@@ -8,6 +8,10 @@ gives it a real history database, a dashboard, and its own scheduler.
 
 ## Changelog
 
+- **v2.7.0** — Configurable posts-per-scan limit (Settings, 1–100), optional
+  upvoted-posts scanning (off by default; needs the Reddit token's `history`
+  scope, with a dashboard warning + re-authorize guidance when missing), and a
+  per-link source column (`saved` / `upvoted` / `both`) in History.
 - **v2.6.0** — JDownloader auto-start (downloads begin immediately), post
   author captured and shown in History, Leaderboard page (top subreddits /
   posters / weekly volume), Logs page, and sent_links.txt import upload.

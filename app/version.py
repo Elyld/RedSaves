@@ -1,4 +1,4 @@
 """Single source of truth for the application version."""
 
 APP_NAME = "RedSaves"
-VERSION = "2.6.0"
+VERSION = "2.7.0"

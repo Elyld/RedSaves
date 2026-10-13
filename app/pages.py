@@ -80,8 +80,20 @@ def dashboard_page(ctx: dict) -> str:
                   if watch else '<p class="dim">Reddit auth healthy.</p>')
     last_line = (f"{status_badge(last.status)} &nbsp;{fmt_dt(last.finished_at or last.started_at)}"
                  if last else '<span class="dim">no runs yet</span>')
+    upvoted_banner = ""
+    if ctx.get("upvoted_warning"):
+        upvoted_banner = """
+<div class="warnbox">
+  <p>⚠️ <b>Upvoted posts aren't being scanned.</b> Your Reddit token lacks the
+  <span class="mono">history</span> scope — re-authorize the app to include
+  upvoted posts. Saved posts are still scanned normally.</p>
+  <form method="post" action="/api/dismiss-upvoted-warning">
+    <button type="submit" class="btn">Dismiss</button>
+  </form>
+</div>"""
     body = f"""
 <h1>Dashboard</h1>
+{upvoted_banner}
 <div class="cards">
   <div class="card"><div class="k">Last run</div><div class="v">{last_line}</div></div>
   <div class="card"><div class="k">Next scheduled</div><div class="v small">{next_line}</div></div>
@@ -105,11 +117,13 @@ def history_page(links, q: str, page: int, pages: int, imported=None, skipped=No
         if link.post_permalink:
             title = f'<a href="https://www.reddit.com{esc(link.post_permalink)}" target="_blank" rel="noopener">{title}</a>'
         author = f"u/{esc(link.author)}" if link.author else "—"
+        source = esc(link.source or "saved")
         rows.append(
             f"<tr><td>{status_badge(link.status)}</td>"
             f"<td>{title}<br><span class='dim mono'>{esc(link.url[:90])}</span></td>"
             f"<td>{author}</td>"
             f"<td>{esc(link.subreddit or '—')}</td>"
+            f"<td class='dim'>{source}</td>"
             f"<td class='nowrap'>{fmt_dt(link.sent_at or link.found_at)}</td></tr>"
         )
     pager = ""
@@ -132,8 +146,8 @@ def history_page(links, q: str, page: int, pages: int, imported=None, skipped=No
   <button type="submit">Search</button>
 </form>
 <table class="tbl">
-<tr><th>Status</th><th>Link</th><th>Author</th><th>Subreddit</th><th>Sent</th></tr>
-{''.join(rows) if rows else '<tr><td colspan="5" class="dim">Nothing here yet.</td></tr>'}
+<tr><th>Status</th><th>Link</th><th>Author</th><th>Subreddit</th><th>Source</th><th>Sent</th></tr>
+{''.join(rows) if rows else '<tr><td colspan="6" class="dim">Nothing here yet.</td></tr>'}
 </table>
 {pager}
 <h2>Import history</h2>
@@ -207,6 +221,12 @@ def settings_page(s: dict, saved: bool) -> str:
   <p class="dim">Two scans a day, container-local time (set <span class="mono">TZ</span> in your compose file).</p>
   <label>First scan <input type="time" name="scan_time_1" value="{esc(s.get('scan_time_1', '08:00'))}" required></label>
   <label>Second scan <input type="time" name="scan_time_2" value="{esc(s.get('scan_time_2', '20:00'))}" required></label>
+  <h2>Sources</h2>
+  <label>Posts per source <input type="number" name="post_limit" value="{esc(s.get('post_limit', '25'))}" min="1" max="100" required></label>
+  <p class="dim">How many posts to check per source each scan (Reddit's per-request max is 100).</p>
+  <label class="check"><input type="checkbox" name="include_upvoted" value="1" {checked('include_upvoted')}> Also scan my upvoted posts</label>
+  <p class="dim">Upvoted posts need your Reddit token to have the <span class="mono">history</span> scope.
+  If it doesn't, scans keep working on saved posts and you'll get a warning here with re-authorize steps.</p>
   <h2>Notifications</h2>
   <label class="check"><input type="checkbox" name="notify_results" value="1" {checked('notify_results')}> Per-run result pings (sent / no new links / failures)</label>
   <label class="check"><input type="checkbox" name="notify_watchdog" value="1" {checked('notify_watchdog')}> Reddit auth watchdog alerts (every 3rd consecutive failure)</label>

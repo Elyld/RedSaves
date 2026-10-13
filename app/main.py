@@ -53,6 +53,7 @@ def _dashboard_ctx() -> dict:
             "watchdog": scan_mod.get_auth_failure_count(),
             "scan_running": scan_mod._scan_lock.locked(),
             "next_runs": scheduler.next_run_times(),
+            "upvoted_warning": scan_mod.upvoted_scope_missing(),
         }
     finally:
         session.close()
@@ -76,7 +77,8 @@ def history(q: str = Query(default=""), page: int = Query(default=1, ge=1),
             like = f"%{q}%"
             query = query.filter(or_(
                 Link.url.like(like), Link.post_title.like(like),
-                Link.subreddit.like(like), Link.author.like(like)))
+                Link.subreddit.like(like), Link.author.like(like),
+                Link.source.like(like)))
         total = query.count()
         pages_count = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
         page = min(page, pages_count)
@@ -173,6 +175,8 @@ def _settings_dict() -> dict:
         "scan_time_2": scan_mod.get_setting_value("scan_time_2", "20:00"),
         "notify_results": scan_mod.get_setting_value("notify_results", "1"),
         "notify_watchdog": scan_mod.get_setting_value("notify_watchdog", "1"),
+        "post_limit": str(scan_mod.get_post_limit()),
+        "include_upvoted": scan_mod.get_setting_value("include_upvoted", "0"),
     }
 
 
@@ -188,13 +192,25 @@ def settings_post(
     scan_time_2: str = Form(...),
     notify_results: str = Form(default="0"),
     notify_watchdog: str = Form(default="0"),
+    post_limit: str = Form(default="25"),
+    include_upvoted: str = Form(default="0"),
 ):
     scan_mod.set_setting_value("scan_time_1", scan_time_1)
     scan_mod.set_setting_value("scan_time_2", scan_time_2)
     scan_mod.set_setting_value("notify_results", "1" if notify_results == "1" else "0")
     scan_mod.set_setting_value("notify_watchdog", "1" if notify_watchdog == "1" else "0")
+    scan_mod.set_post_limit(post_limit)  # validates + clamps 1..100 server-side
+    scan_mod.set_setting_value("include_upvoted", "1" if include_upvoted == "1" else "0")
     scheduler.schedule_from_settings()
     return RedirectResponse("/settings?saved=1", status_code=303)
+
+
+@app.post("/api/dismiss-upvoted-warning")
+def dismiss_upvoted_warning():
+    """Clear the upvoted-scope dashboard warning. It comes back on its own if
+    a later scan's upvoted fetch still fails on auth scope."""
+    scan_mod.set_upvoted_scope_missing(False)
+    return RedirectResponse("/", status_code=303)
 
 
 @app.post("/api/scan")
