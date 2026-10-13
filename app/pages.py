@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta
 from html import escape as _esc
 
+from app.scanner import media_embed
 from app.version import APP_NAME
 
 
@@ -58,6 +60,7 @@ def layout(title: str, body: str, active: str = "") -> str:
   <nav>
     {nav("/", "Dashboard", "dash")}
     {nav("/history", "History", "history")}
+    {nav("/media", "Media", "media")}
     {nav("/top", "Top", "top")}
     {nav("/runs", "Runs", "runs")}
     {nav("/logs", "Logs", "logs")}
@@ -345,3 +348,166 @@ def top_page(subreddits, authors, weekly) -> str:
 </div>
 """
     return layout("Top", body, "top")
+
+
+LB_JS = """
+const MEDIA = __MEDIA_JSON__;
+let lbIndex = -1;
+const lb = () => document.getElementById('lightbox');
+function playerHTML(it) {
+  if (it.kind === 'redgifs')
+    return '<iframe src="' + it.src + '" frameborder="0" scrolling="no" allowfullscreen style="width:100%;height:100%"></iframe>';
+  if (it.kind === 'video')
+    return '<video src="' + it.src + '" controls autoplay loop playsinline style="width:100%;height:100%"></video>';
+  if (it.kind === 'image')
+    return '<img src="' + it.src + '" style="max-width:100%;max-height:100%">';
+  return '<p class="dim">No inline player for this link.</p>';
+}
+function renderLb() {
+  const it = MEDIA[lbIndex];
+  document.getElementById('lb-player').innerHTML = playerHTML(it);
+  document.getElementById('lb-title').textContent = it.title;
+  document.getElementById('lb-sub').textContent =
+    [it.author, it.sub].filter(Boolean).join(' · ');
+  document.getElementById('lb-open').href = it.url;
+  document.getElementById('lb-fav').textContent = it.fav ? '★' : '☆';
+  document.getElementById('lb-fav').classList.toggle('on', !!it.fav);
+  const v = document.querySelector('#lb-player video');
+  if (v) v.onended = () => lbNav(1);
+}
+function openLb(i) {
+  if (!MEDIA.length) return;
+  lbIndex = ((i % MEDIA.length) + MEDIA.length) % MEDIA.length;
+  renderLb();
+  lb().hidden = false;
+  document.body.style.overflow = 'hidden';
+}
+function closeLb() {
+  lb().hidden = true;
+  document.getElementById('lb-player').innerHTML = '';
+  document.body.style.overflow = '';
+  lbIndex = -1;
+}
+function lbNav(d) { openLb(lbIndex + d); }
+function toggleFav(id, btn) {
+  fetch('/api/favorite/' + id, {method: 'POST'})
+    .then(r => r.json()).then(s => {
+      MEDIA.forEach(m => { if (m.id === id) m.fav = s.favorite; });
+      document.querySelectorAll('.mstar[data-id="' + id + '"]').forEach(b => {
+        b.textContent = s.favorite ? '★' : '☆';
+        b.classList.toggle('on', s.favorite);
+      });
+      const it = MEDIA[lbIndex];
+      if (it && it.id === id) renderLb();
+    });
+}
+document.addEventListener('click', e => {
+  const star = e.target.closest('.mstar');
+  if (star) { e.stopPropagation(); toggleFav(+star.dataset.id, star); return; }
+  const card = e.target.closest('.mcard');
+  if (card) {
+    if (card.dataset.kind === 'link') { window.open(card.dataset.url, '_blank'); return; }
+    openLb(+card.dataset.idx);
+  }
+});
+document.addEventListener('mouseover', e => {
+  const v = e.target.closest('.mcard video');
+  if (v) v.play().catch(() => {});
+});
+document.addEventListener('mouseout', e => {
+  const v = e.target.closest('.mcard video');
+  if (v) { v.pause(); }
+});
+document.addEventListener('keydown', e => {
+  if (lb().hidden) return;
+  if (e.key === 'Escape') closeLb();
+  if (e.key === 'ArrowRight') lbNav(1);
+  if (e.key === 'ArrowLeft') lbNav(-1);
+});
+document.getElementById('mshuffle').addEventListener('click', () => {
+  openLb(Math.floor(Math.random() * MEDIA.length));
+});
+"""
+
+
+def media_page(links, q="", author="", subreddit="", fav=0, sort="new",
+               authors=(), subs=()) -> str:
+    """Media center: filterable video grid + lightbox player."""
+    cards = []
+    js_items = []
+    for n, link in enumerate(links):
+        kind, src = media_embed(link.url)
+        title = link.post_title or link.url
+        short_title = title if len(title) <= 80 else title[:77] + "..."
+        if kind == "redgifs":
+            preview = (f'<iframe loading="lazy" src="{esc(src)}" frameborder="0" '
+                       f'scrolling="no" tabindex="-1"></iframe><span class="mplay">▶</span>')
+        elif kind == "video":
+            preview = (f'<video muted loop playsinline preload="metadata" '
+                       f'src="{esc(src)}"></video><span class="mplay">▶</span>')
+        elif kind == "image":
+            preview = f'<img loading="lazy" src="{esc(src)}" alt="">'
+        else:
+            preview = '<span class="mplay">↗</span>'
+        star = "★" if link.favorite else "☆"
+        star_cls = "mstar on" if link.favorite else "mstar"
+        meta_bits = [b for b in (link.author, link.subreddit) if b]
+        cards.append(f"""
+<article class="mcard" data-idx="{n}" data-kind="{kind}" data-url="{esc(link.url)}">
+  <div class="mprev">{preview}
+    <button class="{star_cls}" data-id="{link.id}" title="Toggle favorite">{star}</button>
+  </div>
+  <div class="mmeta">
+    <p class="mtitle">{esc(short_title)}</p>
+    <p class="msub">{" · ".join(esc(b) for b in meta_bits)}</p>
+  </div>
+</article>""")
+        js_items.append({"id": link.id, "kind": kind, "src": src, "url": link.url,
+                         "title": title, "author": link.author or "",
+                         "sub": link.subreddit or "", "fav": bool(link.favorite)})
+
+    def opts(pairs, current, label):
+        out = [f'<option value="">{label}</option>']
+        for name, count in pairs:
+            sel = " selected" if name == current else ""
+            out.append(f'<option value="{esc(name)}"{sel}>{esc(name)} ({count})</option>')
+        return "\n".join(out)
+
+    body = f"""
+<h1>Media</h1>
+<form method="get" action="/media" class="mediabar">
+  <input type="search" name="q" value="{esc(q)}" placeholder="Search title, author…">
+  <select name="author">{opts(authors, author, "All profiles")}</select>
+  <select name="subreddit">{opts(subs, subreddit, "All subreddits")}</select>
+  <select name="sort">
+    <option value="new"{' selected' if sort != 'old' else ''}>Newest first</option>
+    <option value="old"{' selected' if sort == 'old' else ''}>Oldest first</option>
+  </select>
+  <label class="favcheck"><input type="checkbox" name="fav" value="1"{' checked' if fav else ''}> ★ only</label>
+  <button type="submit" class="btn">Filter</button>
+  <button type="button" class="btn" id="mshuffle">🔀 Shuffle</button>
+</form>
+<p class="dim">{len(links)} video{'s' if len(links) != 1 else ''}</p>
+<div class="mgrid">
+{''.join(cards) if cards else '<p class="dim">Nothing here — try clearing the filters.</p>'}
+</div>
+<div id="lightbox" class="lb" hidden>
+  <div class="lb-backdrop" onclick="closeLb()"></div>
+  <div class="lb-box">
+    <div id="lb-player" class="lb-player"></div>
+    <div class="lb-meta">
+      <h3 id="lb-title"></h3>
+      <p id="lb-sub" class="dim"></p>
+      <div class="lb-actions">
+        <button class="btn" onclick="lbNav(-1)">◀</button>
+        <button class="btn" onclick="lbNav(1)">▶</button>
+        <button class="btn" id="lb-fav" onclick="toggleFav(MEDIA[lbIndex].id)">☆</button>
+        <a class="btn" id="lb-open" target="_blank" rel="noopener">Open original ↗</a>
+        <button class="btn" onclick="closeLb()">✕</button>
+      </div>
+    </div>
+  </div>
+</div>
+<script>{LB_JS.replace("__MEDIA_JSON__", json.dumps(js_items))}</script>
+"""
+    return layout("Media", body, active="media")
