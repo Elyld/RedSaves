@@ -1,1 +1,11 @@
-.env"sent_links.txt" 
+.env
+sent_links.txt
+auth_failures.txt
+screenshots/
+*.db
+*.log
+*.log.1
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
