@@ -195,8 +195,9 @@ def test_enrich_progress_counts(fresh_db, monkeypatch, config, token_ok):
     scanner.run_enrich(config)
 
     p = scanner.get_enrich_progress()
-    assert p == {"running": False, "processed": 3, "total": 3,
-                "found": 2, "skipped": 1}
+    # phase 1 found 2 of 3; phase 2 (saved-scan) found nothing for the last one
+    assert p == {"running": False, "phase": "saved-scan", "processed": 0,
+                "total": 1, "found": 2, "skipped": 1}
 
 
 def test_enrich_concurrent_second_run_refused(fresh_db, config):
@@ -276,7 +277,7 @@ def test_enrich_status_endpoint(fresh_db):
     with TestClient(app) as client:
         r = client.get("/api/enrich-status")
         assert r.status_code == 200
-        assert set(r.json()) == {"running", "processed", "total", "found", "skipped"}
+        assert set(r.json()) == {"running", "phase", "processed", "total", "found", "skipped"}
 
 
 def test_enrich_route_409_when_running(fresh_db, monkeypatch):
@@ -374,3 +375,109 @@ def test_canonicalize_redgifs_forms():
     # already-canonical stays first
     v = scanner._url_variants("https://www.redgifs.com/watch/AbcXyz")
     assert v[0] == "https://www.redgifs.com/watch/AbcXyz"
+
+
+# --- phase 2: saved-posts deep match -----------------------------------------
+
+def _fake_reddit(monkeypatch, info_by_url, saved_pages):
+    """Fake requests.get routing /api/info and /saved. saved_pages is a list
+    of (children, after) tuples; children are raw post data dicts."""
+    requested = []
+
+    def fake_get(url, params=None, headers=None, timeout=None):
+        requested.append((url, dict(params or {})))
+        resp = Mock()
+        resp.status_code = 200
+        if url.endswith("/api/info"):
+            media_url = (params or {}).get("url")
+            resp.json.return_value = info_by_url.get(
+                media_url, {"data": {"children": []}})
+        elif url.endswith("/saved"):
+            idx = len([r for r in requested if r[0].endswith("/saved")]) - 1
+            children, after = saved_pages[min(idx, len(saved_pages) - 1)]
+            resp.json.return_value = {"data": {
+                "children": [{"data": c} for c in children], "after": after}}
+        else:
+            raise AssertionError(f"unexpected url {url}")
+        return resp
+
+    monkeypatch.setattr(scanner.requests, "get", fake_get)
+    return requested
+
+
+def _saved_post(url, title="Saved title", subreddit="pics",
+                author="saveposter", permalink="/r/pics/comments/s1",
+                created=1700000000):
+    return {"url": url, "title": title, "subreddit": subreddit,
+            "author": author, "permalink": permalink, "created_utc": created}
+
+
+def test_deep_match_fills_from_saved_posts(fresh_db, monkeypatch, config, token_ok):
+    """A v.redd.it media-file URL in the DB matches the bare-ID saved post."""
+    session = db.get_session()
+    link_id = _add_link(session, "https://v.redd.it/abc123/CMAF_1080.mp4")
+    session.close()
+    _fake_reddit(monkeypatch, {}, [
+        ([_saved_post("https://v.redd.it/abc123")], None),
+    ])
+    _no_throttle(monkeypatch)
+
+    assert scanner.run_enrich(config) is True
+
+    session = db.get_session()
+    try:
+        row = session.query(Link).filter(Link.id == link_id).first()
+        assert row.post_title == "Saved title"
+        assert row.author == "saveposter"
+        assert row.subreddit == "pics"
+        assert row.post_permalink == "/r/pics/comments/s1"
+        from datetime import datetime as dt
+        assert row.sent_at == dt.fromtimestamp(1700000000)
+    finally:
+        session.close()
+
+
+def test_deep_match_pages_through_saved(fresh_db, monkeypatch, config, token_ok):
+    session = db.get_session()
+    id1 = _add_link(session, "https://v.redd.it/aaa111/DASH_720.mp4")
+    id2 = _add_link(session, "https://www.redgifs.com/watch/someslug")
+    session.close()
+    _fake_reddit(monkeypatch, {}, [
+        ([_saved_post("https://v.redd.it/aaa111", title="First")], "t3_after1"),
+        ([_saved_post("https://v3.redgifs.com/watch/someslug", title="Second")], None),
+    ])
+    _no_throttle(monkeypatch)
+
+    scanner.run_enrich(config)
+
+    session = db.get_session()
+    try:
+        r1 = session.query(Link).filter(Link.id == id1).first()
+        r2 = session.query(Link).filter(Link.id == id2).first()
+        assert r1.post_title == "First"
+        assert r2.post_title == "Second"  # v3 form matched www form
+    finally:
+        session.close()
+
+
+def test_deep_match_ignores_nonmedia_and_adds_nothing(fresh_db, monkeypatch, config, token_ok):
+    session = db.get_session()
+    link_id = _add_link(session, "https://v.redd.it/zzz999/CMAF_1080.mp4")
+    before = session.query(Link).count()
+    session.close()
+    _fake_reddit(monkeypatch, {}, [
+        ([_saved_post("https://example.com/article", title="Not media"),
+          _saved_post("https://v.redd.it/other000", title="Unrelated media")], None),
+    ])
+    _no_throttle(monkeypatch)
+
+    scanner.run_enrich(config)
+
+    session = db.get_session()
+    try:
+        assert session.query(Link).count() == before  # nothing added
+        row = session.query(Link).filter(Link.id == link_id).first()
+        assert row.post_title == ""  # unmatched, untouched
+    finally:
+        session.close()
+    assert scanner.get_enrich_progress()["skipped"] == 1

@@ -143,9 +143,11 @@ def history_page(links, q: str, page: int, pages: int, imported=None, skipped=No
     enrich_block = ""
     enrich_state = enrich or {}
     if enrich_state.get("running"):
+        phase_label = ("🔎 Scanning your saved posts… " if enrich_state.get("phase") == "saved-scan"
+                       else "⏳ Looking up on Reddit… ")
         enrich_block = f"""
 <div class="infobox">
-  <p>⏳ Enriching missing info… <span id="enrich-counts">{enrich_state.get("processed", 0)}/{enrich_state.get("total", 0)}, {enrich_state.get("found", 0)} found</span></p>
+  <p><span id="enrich-label">{phase_label}</span><span id="enrich-counts">{enrich_state.get("processed", 0)}/{enrich_state.get("total", 0)}, {enrich_state.get("found", 0)} found</span></p>
   <button class="bigbtn" disabled>✨ Enrich missing info</button>
 </div>
 <script>
@@ -153,7 +155,9 @@ def history_page(links, q: str, page: int, pages: int, imported=None, skipped=No
   var iv = setInterval(function () {{
     fetch('/api/enrich-status').then(function (r) {{ return r.json(); }}).then(function (s) {{
       var el = document.getElementById('enrich-counts');
+      var lb = document.getElementById('enrich-label');
       if (el) el.textContent = s.processed + '/' + s.total + ', ' + s.found + ' found';
+      if (lb) lb.textContent = s.phase === 'saved-scan' ? '🔎 Scanning your saved posts… ' : '⏳ Looking up on Reddit… ';
       if (!s.running) {{ clearInterval(iv); location.reload(); }}
     }}).catch(function () {{}});
   }}, 5000);
@@ -163,8 +167,9 @@ def history_page(links, q: str, page: int, pages: int, imported=None, skipped=No
         enrich_block = f"""
 <form method="post" action="/history/enrich" class="form">
   <button type="submit" class="bigbtn">✨ Enrich missing info ({missing})</button>
-  <span class="dim">Looks up titles, authors and subreddits on Reddit — one request
-  per 1.2s, in the background. Existing titles are never overwritten.</span>
+  <span class="dim">Two passes: first looks each link up on Reddit, then it scans your
+  full saved list to match whatever's left — one request per 1.2s, in the background.
+  Existing titles are never overwritten, and no new links are added.</span>
 </form>"""
     body = f"""
 <h1>History</h1>
