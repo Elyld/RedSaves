@@ -71,7 +71,7 @@ def layout(title: str, body: str, active: str = "") -> str:
 def dashboard_page(ctx: dict) -> str:
     last = ctx.get("last_run")
     next_runs = ctx.get("next_runs", [])
-    next_line = ", ".join(next_runs) if next_runs else "not scheduled"
+    next_line = "<br>".join(esc(t) for t in next_runs) if next_runs else "not scheduled"
     scan_state = "running" if ctx.get("scan_running") else "idle"
     watch = ctx.get("watchdog", 0)
     watch_line = (f'<p class="warn">⚠️ Reddit auth has failed {watch} run(s) in a row.</p>'
@@ -82,7 +82,7 @@ def dashboard_page(ctx: dict) -> str:
 <h1>Dashboard</h1>
 <div class="cards">
   <div class="card"><div class="k">Last run</div><div class="v">{last_line}</div></div>
-  <div class="card"><div class="k">Next scheduled</div><div class="v small">{esc(next_line)}</div></div>
+  <div class="card"><div class="k">Next scheduled</div><div class="v small">{next_line}</div></div>
   <div class="card"><div class="k">Scanner</div><div class="v">{esc(scan_state)}</div></div>
   <div class="card"><div class="k">Links sent (all time)</div><div class="v">{ctx.get("total_sent", 0)}</div></div>
   <div class="card"><div class="k">Links sent (7 days)</div><div class="v">{ctx.get("sent_7d", 0)}</div></div>
