@@ -24,6 +24,7 @@ from __future__ import annotations
 import logging
 import os
 import threading
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -31,6 +32,7 @@ from pathlib import Path
 import requests
 from dotenv import load_dotenv
 from myjdapi import Myjdapi
+from sqlalchemy import func, or_
 
 from app.database import DATA_DIR, get_session
 from app.models import Link, Run, Setting
@@ -63,6 +65,158 @@ REQUIRED_ENV = ('EMAIL', 'PASSWORD', 'DEVICE_NAME', 'CLIENT_ID', 'SECRET_TOKEN',
                 'PUSHOVER_USER_KEY', 'PUSHOVER_API_TOKEN')
 
 _scan_lock = threading.Lock()
+
+
+# --- Metadata enrichment ----------------------------------------------------
+# Backfills title/author/subreddit/permalink for links that have none (e.g.
+# imported from a legacy sent_links.txt). Reddit's /api/info?url= returns the
+# submissions linking to a URL. One request per 1.2s stays well under Reddit's
+# 60-requests/minute OAuth limit.
+ENRICH_THROTTLE_SECONDS = 1.2
+
+_enrich_lock = threading.Lock()
+_enrich_progress = {"running": False, "processed": 0, "total": 0,
+                    "found": 0, "skipped": 0}
+
+K_ENRICH_NOTE = "enrich_note"  # dashboard note set when enrichment aborts
+
+
+def _throttle():
+    """Politeness pause between /api/info requests (mocked in tests)."""
+    time.sleep(ENRICH_THROTTLE_SECONDS)
+
+
+def get_enrich_note() -> str:
+    return get_setting_value(K_ENRICH_NOTE, "")
+
+
+def set_enrich_note(note: str) -> None:
+    set_setting_value(K_ENRICH_NOTE, note)
+
+
+def titleless_count() -> int:
+    """How many links have no title yet (enrichment candidates)."""
+    session = get_session()
+    try:
+        return (session.query(func.count(Link.id))
+                .filter(or_(Link.post_title == "", Link.post_title.is_(None)))
+                .scalar() or 0)
+    finally:
+        session.close()
+
+
+def titleless_links() -> list:
+    """(id, url) pairs for links missing a title, oldest first."""
+    session = get_session()
+    try:
+        rows = (session.query(Link.id, Link.url)
+                .filter(or_(Link.post_title == "", Link.post_title.is_(None)))
+                .order_by(Link.id).all())
+        return [(r.id, r.url) for r in rows]
+    finally:
+        session.close()
+
+
+def get_enrich_progress() -> dict:
+    return dict(_enrich_progress)
+
+
+def fetch_info_by_url(config: ScanConfig, token, url):
+    """Look up submissions linking to url via /api/info. Returns a metadata
+    dict or None when nothing is found / on error (row left untouched)."""
+    try:
+        headers = {'Authorization': f'bearer {token}', 'User-Agent': 'RedSaves v2.4'}
+        response = requests.get('https://oauth.reddit.com/api/info',
+                                params={'url': url},
+                                headers=headers, timeout=REQUEST_TIMEOUT)
+        if response.status_code != 200:
+            log_error(f"/api/info lookup failed for {url[:60]}: HTTP {response.status_code}")
+            return None
+        children = (response.json().get('data') or {}).get('children') or []
+        if not children:
+            return None
+        data = children[0]['data']
+        return {
+            'post_title': data.get('title', ''),
+            'post_permalink': data.get('permalink', ''),
+            'subreddit': (data.get('subreddit') or ''),
+            'author': (data.get('author') or ''),
+        }
+    except Exception as e:
+        log_error(f"/api/info lookup failed for {url[:60]}: {e}")
+        return None
+
+
+def apply_enrichment(link_id: int, meta: dict) -> None:
+    """Fill empty metadata fields on a link. Never overwrites existing
+    non-empty values."""
+    session = get_session()
+    try:
+        row = session.query(Link).filter(Link.id == link_id).first()
+        if not row:
+            return
+        if not row.post_title and meta.get('post_title'):
+            row.post_title = meta['post_title']
+        if not row.post_permalink and meta.get('post_permalink'):
+            row.post_permalink = meta['post_permalink']
+        if not row.subreddit and meta.get('subreddit'):
+            row.subreddit = meta['subreddit']
+        if not row.author and meta.get('author'):
+            row.author = meta['author']
+        session.commit()
+    finally:
+        session.close()
+
+
+def run_enrich(config: ScanConfig | None = None) -> bool:
+    """Run metadata enrichment to completion. Returns False immediately when
+    another enrichment is already running (never two concurrently)."""
+    if not _enrich_lock.acquire(blocking=False):
+        log_info("Enrich skipped: another enrichment is already running.")
+        return False
+    try:
+        _run_enrich(config or ScanConfig.from_env())
+    finally:
+        _enrich_lock.release()
+    return True
+
+
+def _run_enrich(config: ScanConfig | None) -> None:
+    global _enrich_progress
+    _enrich_progress = {"running": True, "processed": 0, "total": 0,
+                        "found": 0, "skipped": 0}
+    try:
+        set_enrich_note("")  # clear any previous abort note; re-set below if needed
+        if config is None:
+            msg = "Enrich aborted: missing Reddit credentials in environment."
+            log_error(msg)
+            set_enrich_note("Metadata enrichment couldn't start — Reddit "
+                            "credentials are missing. Check your environment.")
+            return
+        token = get_access_token(config)
+        if not token:
+            msg = "Enrich aborted: could not obtain a Reddit access token."
+            log_error(msg)
+            set_enrich_note("Metadata enrichment couldn't get a Reddit token — "
+                            "see the Logs page for details.")
+            return
+        targets = titleless_links()
+        _enrich_progress["total"] = len(targets)
+        log_info(f"Enrich started: {len(targets)} link(s) missing titles.")
+        for link_id, url in targets:
+            meta = fetch_info_by_url(config, token, url)
+            if meta:
+                apply_enrichment(link_id, meta)
+                _enrich_progress["found"] += 1
+            else:
+                _enrich_progress["skipped"] += 1
+            _enrich_progress["processed"] += 1
+            _throttle()
+        log_info(f"Enrich finished: {_enrich_progress['found']} enriched, "
+                 f"{_enrich_progress['skipped']} skipped, "
+                 f"of {_enrich_progress['total']} processed.")
+    finally:
+        _enrich_progress["running"] = False
 
 
 @dataclass

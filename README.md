@@ -8,6 +8,9 @@ gives it a real history database, a dashboard, and its own scheduler.
 
 ## Changelog
 
+- **v2.8.0** — "Enrich missing info": backfills title/author/subreddit for
+  imported links via Reddit's `/api/info` (polite 1.2s throttle, background
+  thread, progress on the History page, never overwrites existing titles).
 - **v2.7.0** — Configurable posts-per-scan limit (Settings, 1–100), optional
   upvoted-posts scanning (off by default; needs the Reddit token's `history`
   scope, with a dashboard warning + re-authorize guidance when missing), and a

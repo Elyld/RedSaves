@@ -54,6 +54,7 @@ def _dashboard_ctx() -> dict:
             "scan_running": scan_mod._scan_lock.locked(),
             "next_runs": scheduler.next_run_times(),
             "upvoted_warning": scan_mod.upvoted_scope_missing(),
+            "enrich_note": scan_mod.get_enrich_note(),
         }
     finally:
         session.close()
@@ -85,9 +86,28 @@ def history(q: str = Query(default=""), page: int = Query(default=1, ge=1),
         links = (query.order_by(desc(Link.id))
                  .offset((page - 1) * PAGE_SIZE).limit(PAGE_SIZE).all())
         return pages.history_page(links, q, page, pages_count,
-                                  imported=imported, skipped=skipped)
+                                  imported=imported, skipped=skipped,
+                                  missing=scan_mod.titleless_count(),
+                                  enrich=scan_mod.get_enrich_progress())
     finally:
         session.close()
+
+
+@app.post("/history/enrich")
+def history_enrich():
+    """Start metadata enrichment in a background thread. 409 while one is
+    already running."""
+    if scan_mod._enrich_lock.locked():
+        return JSONResponse({"ok": False, "reason": "already running"}, status_code=409)
+    thread = threading.Thread(target=scan_mod.run_enrich, daemon=True)
+    thread.start()
+    return RedirectResponse("/history", status_code=303)
+
+
+@app.get("/api/enrich-status")
+def api_enrich_status():
+    """Progress of the running (or last) enrichment for the History page."""
+    return scan_mod.get_enrich_progress()
 
 
 @app.post("/history/import")

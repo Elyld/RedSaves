@@ -59,6 +59,12 @@ h2 { margin-top: 1.8rem; border-bottom: 1px solid var(--line); padding-bottom: 0
 }
 .warnbox p { margin: 0 0 0.6rem; }
 .warnbox .btn { margin: 0; }
+.infobox {
+  background: var(--panel); border: 1px solid var(--accent); border-radius: 10px;
+  padding: 0.9rem 1rem; margin-bottom: 1rem;
+  box-shadow: 0 0 18px var(--accent-glow);
+}
+.infobox p { margin: 0 0 0.6rem; }
 .okline { color: var(--accent-soft); }
 .badge {
   display: inline-block; padding: 0.15rem 0.55rem; border-radius: 999px;
