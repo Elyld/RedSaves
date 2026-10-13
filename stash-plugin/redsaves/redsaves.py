@@ -22,6 +22,12 @@ STASH_GRAPHQL = "http://localhost:9999/graphql"
 MARKER_TAG = "RedSaves"  # added to every processed scene; skips re-processing
 MAX_TAGS = 12
 _ALIAS_RE = re.compile(r"is used as alias for '([^']+)'")
+_OP_RE = re.compile(r"(?:query|mutation)\s+(\w+)")
+
+
+def _op_name(query):
+    m = _OP_RE.search(query or "")
+    return m.group(1) if m else "graphql"
 
 _api_key = ""
 
@@ -40,6 +46,7 @@ def log_err(msg):
 
 def gql_raw(query, variables=None):
     """Full response body (data + errors), or None on transport failure."""
+    op = _op_name(query)
     payload = json.dumps({"query": query, "variables": variables or {}}).encode()
     req = urllib.request.Request(
         STASH_GRAPHQL, data=payload,
@@ -50,18 +57,19 @@ def gql_raw(query, variables=None):
         with urllib.request.urlopen(req, timeout=30) as resp:
             return json.loads(resp.read().decode("utf-8", "replace"))
     except urllib.error.HTTPError as e:
-        log_err(f"GraphQL HTTP {e.code}")
+        log_err(f"{op}: GraphQL HTTP {e.code}")
     except Exception as e:  # timeouts, connection refused, ...
-        log_err(f"GraphQL error: {e}")
+        log_err(f"{op}: GraphQL error: {e}")
     return None
 
 
 def gql(query, variables=None):
+    op = _op_name(query)
     body = gql_raw(query, variables)
     if not body:
         return None
     if body.get("errors"):
-        log_err(f"GraphQL errors: {json.dumps(body['errors'])[:300]}")
+        log_err(f"{op}: GraphQL errors: {json.dumps(body['errors'])[:300]}")
         return None
     return body.get("data")
 
@@ -113,15 +121,15 @@ mutation TagCreate($name: String!) {
 CONFIGURATION = "query { configuration { plugins } }"
 
 ALL_TAGS = """
-query AllTags {
-  findTags(filter: {per_page: -1}) {
+query AllTags($page: Int!) {
+  findTags(filter: {page: $page, per_page: 500}) {
     tags { id name aliases }
   }
 }"""
 
 ALL_PERFORMERS = """
-query AllPerformers {
-  findPerformers(filter: {per_page: -1}) {
+query AllPerformers($page: Int!) {
+  findPerformers(filter: {page: $page, per_page: 500}) {
     performers { id name aliases }
   }
 }"""
@@ -142,11 +150,19 @@ class AliasIndex:
         query = ALL_TAGS if kind == "tag" else ALL_PERFORMERS
         outer = "findTags" if kind == "tag" else "findPerformers"
         inner = "tags" if kind == "tag" else "performers"
-        data = gql(query)
-        for t in ((data or {}).get(outer) or {}).get(inner) or []:
-            self._map[t["name"].lower()] = t["id"]
-            for a in t.get("aliases") or []:
-                self._map.setdefault(a.lower(), t["id"])
+        page = 1
+        while True:
+            data = gql(query, {"page": page})
+            items = ((data or {}).get(outer) or {}).get(inner) or []
+            if not items:
+                break
+            for t in items:
+                self._map[t["name"].lower()] = t["id"]
+                for a in t.get("aliases") or []:
+                    self._map.setdefault(a.lower(), t["id"])
+            if len(items) < 500:
+                break
+            page += 1
 
     def get(self, name):
         return self._map.get((name or "").lower())
