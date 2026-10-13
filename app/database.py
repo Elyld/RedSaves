@@ -13,7 +13,7 @@ import os
 from datetime import datetime
 from pathlib import Path
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import sessionmaker
 
 from app.models import Base, Link
@@ -45,7 +45,18 @@ def init_db() -> None:
     """Create tables and migrate legacy sent_links.txt on first run."""
     get_engine()
     Base.metadata.create_all(_engine)
+    _ensure_author_column()
     migrate_legacy_history()
+
+
+def _ensure_author_column() -> None:
+    """Add links.author to databases created before v2.6.0 (no Alembic needed;
+    this is the only schema change so far)."""
+    cols = [c["name"] for c in inspect(_engine).get_columns("links")]
+    if "author" not in cols:
+        with _engine.begin() as conn:
+            conn.execute(text("ALTER TABLE links ADD COLUMN author VARCHAR(128) DEFAULT ''"))
+        logger.info("added links.author column")
 
 
 def migrate_legacy_history() -> int:
