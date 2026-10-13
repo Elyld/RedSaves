@@ -8,6 +8,12 @@ gives it a real history database, a dashboard, and its own scheduler.
 
 ## Changelog
 
+- **v2.15.1** — Hardening from a 5k-link stress sim: stored-XSS fix (Reddit
+  titles are `\u003c`-escaped in the media page's data blob), SQLite WAL mode
+  (no more "database is locked" 500s when background jobs overlap browsing),
+  graveyard pagination, dupe detector now catches www-vs-bare and
+  http-vs-https URL variants, dupe badge cached (5 min TTL) instead of a
+  full-table scan per page load, runs table pruned to the newest 200 rows.
 - **v2.14.0** — Stash integration: new `GET /api/stash/lookup?filename=…`
   endpoint (title, performer, tags, URL, rating, date for any file in the
   library) plus a Stash plugin (`stash-plugin/redsaves/`) — a
