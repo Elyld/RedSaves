@@ -61,6 +61,8 @@ def layout(title: str, body: str, active: str = "") -> str:
     {nav("/", "Dashboard", "dash")}
     {nav("/history", "History", "history")}
     {nav("/media", "Media", "media")}
+    {nav("/playlists", "Playlists", "playlists")}
+    {nav("/stats", "Stats", "stats")}
     {nav("/top", "Top", "top")}
     {nav("/runs", "Runs", "runs")}
     {nav("/logs", "Logs", "logs")}
@@ -350,10 +352,222 @@ def top_page(subreddits, authors, weekly) -> str:
     return layout("Top", body, "top")
 
 
+def stats_page(ctx: dict) -> str:
+    """Collection stats: totals, pics vs clips, playtime, top lists, growth."""
+    def rank_rows(items, prefix=""):
+        rows = []
+        for i, (name, count) in enumerate(items, 1):
+            rows.append(
+                f"<tr><td class='dim'>#{i}</td><td>{prefix}{esc(name)}</td>"
+                f"<td>{count}</td></tr>"
+            )
+        return "".join(rows) or '<tr><td colspan="3" class="dim">Nothing yet.</td></tr>'
+
+    max_month = max((c for _, c in ctx.get("monthly", [])), default=0)
+    bars = []
+    for label, count in ctx.get("monthly", []):
+        pct = round(count / max_month * 100) if max_month else 0
+        bars.append(
+            f"<div class='bar-row'><span class='bar-label'>{esc(label)}</span>"
+            f"<div class='bar-track'><div class='bar-fill' style='width:{pct}%'></div></div>"
+            f"<span class='bar-count'>{count}</span></div>"
+        )
+    body = f"""
+<h1>Stats</h1>
+<div class="cards">
+  <div class="card"><div class="k">Links</div><div class="v">{ctx.get("total", 0)}</div></div>
+  <div class="card"><div class="k">🎬 Clips</div><div class="v">{ctx.get("clips", 0)}</div></div>
+  <div class="card"><div class="k">🖼️ Pics</div><div class="v">{ctx.get("pics", 0)}</div></div>
+  <div class="card"><div class="k">★ Favorites</div><div class="v">{ctx.get("favs", 0)}</div></div>
+  <div class="card"><div class="k">💀 Dead</div><div class="v">{ctx.get("dead", 0)}</div></div>
+  <div class="card"><div class="k">📁 On disk</div><div class="v">{ctx.get("local", 0)}</div></div>
+  <div class="card"><div class="k">▶️ Playtime</div><div class="v small">{esc(ctx.get("playtime", "—"))}</div></div>
+  <div class="card"><div class="k">👁️ Views</div><div class="v">{ctx.get("views", 0):,}</div></div>
+</div>
+<div class="topgrid">
+  <div>
+    <h2>Top posters</h2>
+    <table class="tbl">
+    <tr><th></th><th>Author</th><th>Links</th></tr>
+    {rank_rows(ctx.get("top_authors", []), prefix="u/")}
+    </table>
+  </div>
+  <div>
+    <h2>Top subreddits</h2>
+    <table class="tbl">
+    <tr><th></th><th>Subreddit</th><th>Links</th></tr>
+    {rank_rows(ctx.get("top_subs", []), prefix="r/")}
+    </table>
+  </div>
+</div>
+<div class="topgrid">
+  <div>
+    <h2>Top creators</h2>
+    <table class="tbl">
+    <tr><th></th><th>Creator</th><th>Links</th></tr>
+    {rank_rows(ctx.get("top_creators", []), prefix="@")}
+    </table>
+  </div>
+  <div>
+    <h2>Links added per month</h2>
+    <p class="dim">Last 12 months.</p>
+    <div class="bars">
+    {''.join(bars)}
+    </div>
+  </div>
+</div>
+"""
+    return layout("Stats", body, "stats")
+
+
+def playlists_page(playlists) -> str:
+    """List of playlists with item counts, create + delete."""
+    rows = []
+    for pl, count in playlists:
+        rows.append(
+            f"<tr><td><a href='/playlists/{pl.id}'>{esc(pl.name)}</a></td>"
+            f"<td>{count}</td>"
+            f"<td class='dim'>{fmt_dt(pl.created_at)}</td>"
+            f"<td><form method='post' action='/playlists/{pl.id}/delete' "
+            f"onsubmit=\"return confirm('Delete playlist {esc(pl.name)}? "
+            f"The links stay in your library.')\">"
+            f"<button type='submit' class='btn danger'>Delete</button></form></td></tr>"
+        )
+    body = f"""
+<h1>Playlists</h1>
+<p class="dim">Named collections — group videos and pics however you like.
+Deleting a playlist never deletes the links themselves.</p>
+<table class="tbl">
+<tr><th>Name</th><th>Items</th><th>Created</th><th></th></tr>
+{''.join(rows) if rows else '<tr><td colspan="4" class="dim">No playlists yet — make one below.</td></tr>'}
+</table>
+<h2>New playlist</h2>
+<form method="post" action="/playlists" class="form">
+  <label>Name <input type="text" name="name" maxlength="128" required
+         placeholder="e.g. favorites of the month"></label>
+  <button type="submit" class="bigbtn">Create</button>
+</form>
+<p class="dim">Tip: open anything in the Media center and use the
+<span class="mono">＋ List</span> button in the player to add it to a playlist.</p>
+"""
+    return layout("Playlists", body, "playlists")
+
+
+def playlist_detail_page(playlist, links) -> str:
+    """Items in one playlist, with remove buttons."""
+    rows = []
+    for link in links:
+        title = esc(link.post_title or link.url)
+        rows.append(
+            f"<tr><td>{title}<br><span class='dim mono'>{esc(link.url[:80])}</span></td>"
+            f"<td>{esc(link.author or '—')}</td>"
+            f"<td><a href='/media?q={esc(link.url[:40])}'>open in Media ↗</a></td>"
+            f"<td><form method='post' action='/api/playlists/{playlist.id}/remove/{link.id}'>"
+            f"<button type='submit' class='btn'>Remove</button></form></td></tr>"
+        )
+    body = f"""
+<h1>{esc(playlist.name)}</h1>
+<p class="dim">{len(links)} item{'s' if len(links) != 1 else ''}</p>
+<table class="tbl">
+<tr><th>Link</th><th>Author</th><th></th><th></th></tr>
+{''.join(rows) if rows else '<tr><td colspan="4" class="dim">Empty — add things from the Media center.</td></tr>'}
+</table>
+<p><a href="/playlists">← All playlists</a></p>
+"""
+    return layout(playlist.name, body, "playlists")
+
+
+def dupes_page(groups) -> str:
+    """Suspected duplicate links, grouped, with per-group merge."""
+    blocks = []
+    for n, g in enumerate(groups):
+        cards = []
+        for link in g["links"]:
+            keep = " <b>← keep</b>" if link.id == g["winner_id"] else ""
+            title = esc(link.post_title or link.url)
+            cards.append(
+                f"<tr><td>{title}<br><span class='dim mono'>{esc(link.url[:80])}</span></td>"
+                f"<td class='dim'>{esc(link.source or '')}</td>"
+                f"<td>{'★' if link.favorite else ''}{'📁' if link.local_file else ''}{keep}</td></tr>"
+            )
+        losers = ",".join(str(l.id) for l in g["links"] if l.id != g["winner_id"])
+        blocks.append(f"""
+<div class="dupegroup">
+  <h3>Dupe group {n + 1} <span class="dim">({esc(g["reason"])})</span></h3>
+  <table class="tbl">
+  <tr><th>Link</th><th>Source</th><th></th></tr>
+  {''.join(cards)}
+  </table>
+  <form method="post" action="/dupes/merge" class="form">
+    <input type="hidden" name="winner_id" value="{g["winner_id"]}">
+    <input type="hidden" name="loser_ids" value="{losers}">
+    <button type="submit" class="btn">Merge — keep the marked one, delete {len(g["links"]) - 1}</button>
+    <span class="dim">The winner is picked automatically: ★ favorite first,
+    then downloaded, then most info. Deleting here only removes library rows —
+    JDownloader downloads are untouched.</span>
+  </form>
+</div>""")
+    merge_all = ""
+    if groups:
+        merge_all = """
+<form method="post" action="/dupes/merge-all" class="form"
+      onsubmit="return confirm('Merge ALL dupe groups, keeping the auto-picked winner of each?')">
+  <button type="submit" class="bigbtn">Merge all groups</button>
+</form>"""
+    body = f"""
+<h1>Dupes</h1>
+<p class="dim">The same post saved twice — e.g. once as a redgifs link and once
+as v.redd.it — or the same file under two URL forms. {len(groups)} group{'s' if len(groups) != 1 else ''} found.</p>
+{merge_all}
+{''.join(blocks) if blocks else '<p class="okline">✓ No dupes — nice and clean.</p>'}
+"""
+    return layout("Dupes", body, "media")
+
+
+def graveyard_page(links) -> str:
+    """Dead links, with bulk purge."""
+    rows = []
+    for link in links:
+        title = esc(link.post_title or link.url)
+        rows.append(
+            f"<tr><td>{title}<br><span class='dim mono'>{esc(link.url[:80])}</span></td>"
+            f"<td>{esc(link.author or '—')}</td>"
+            f"<td class='dim nowrap'>{fmt_dt(link.checked_at)}</td>"
+            f"<td><form method='post' action='/graveyard/delete/{link.id}'>"
+            f"<button type='submit' class='btn'>Delete</button></form></td></tr>"
+        )
+    purge = ""
+    if links:
+        purge = f"""
+<form method="post" action="/graveyard/purge" class="form"
+      onsubmit="return confirm('Delete all {len(links)} dead links from the library?')">
+  <button type="submit" class="bigbtn danger">🪦 Purge all dead ({len(links)})</button>
+  <span class="dim">Removes the library rows only — files JDownloader already
+  grabbed stay on disk.</span>
+</form>"""
+    body = f"""
+<h1>Graveyard</h1>
+<p class="dim">Links the dead-link check found gone (deleted posts, pulled videos).
+{len(links)} total. Run <b>🩺 Check dead links</b> on the Media page to refresh this list.</p>
+{purge}
+<table class="tbl">
+<tr><th>Link</th><th>Author</th><th>Checked</th><th></th></tr>
+{''.join(rows) if rows else '<tr><td colspan="4" class="dim">No dead links. 🎉</td></tr>'}
+</table>
+"""
+    return layout("Graveyard", body, "media")
+
+
 LB_JS = """
 const MEDIA = __MEDIA_JSON__;
+const PLAYLISTS = __PLAYLISTS_JSON__;
 let lbIndex = -1;
 const lb = () => document.getElementById('lightbox');
+function fmtNum(n) {
+  if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
+  if (n >= 1000) return (n / 1000).toFixed(1) + 'k';
+  return '' + n;
+}
 function playerHTML(it) {
   if (it.kind === 'redgifs')
     return '<iframe src="' + it.src + '" frameborder="0" scrolling="no" allowfullscreen style="width:100%;height:100%"></iframe>';
@@ -372,8 +586,11 @@ function renderLb() {
   if (it.creator && it.creator !== it.author) bits.push('@' + it.creator);
   if (it.sub) bits.push('r/' + it.sub);
   if (it.score) bits.push('▲ ' + it.score);
+  if (it.views) bits.push('👁 ' + fmtNum(it.views));
+  if (it.likes) bits.push('♥ ' + fmtNum(it.likes));
   if (it.duration) bits.push(fmtDur(it.duration));
   document.getElementById('lb-sub').textContent = bits.join(' · ');
+  document.getElementById('lb-tags').textContent = it.tags ? '#' + it.tags.split(', ').slice(0, 8).join(' #') : '';
   document.getElementById('lb-open').href = it.url;
   document.getElementById('lb-note').textContent =
     (it.kind === 'redgifs' && !it.local)
@@ -440,12 +657,31 @@ document.addEventListener('keydown', e => {
 document.getElementById('mshuffle').addEventListener('click', () => {
   openLb(Math.floor(Math.random() * MEDIA.length));
 });
+function fillPlaylistSelect() {
+  const sel = document.getElementById('lb-pl');
+  if (!sel) return;
+  sel.innerHTML = PLAYLISTS.map(p =>
+    '<option value="' + p.id + '">' + p.name.replace(/</g, '&lt;') + '</option>').join('');
+}
+function addToPlaylist() {
+  const sel = document.getElementById('lb-pl');
+  const it = MEDIA[lbIndex];
+  if (!sel || !sel.value || !it) return;
+  fetch('/api/playlists/' + sel.value + '/add/' + it.id, {method: 'POST'})
+    .then(r => r.json()).then(s => {
+      const btn = document.getElementById('lb-pl-add');
+      btn.textContent = s.ok ? '✓ Added' : '＋ List';
+      setTimeout(() => { btn.textContent = '＋ List'; }, 1500);
+    });
+}
+fillPlaylistSelect();
 """
 
 
 def media_page(links, q="", author="", subreddit="", creator="", fav=0,
                hide_dead=0, sort="new", authors=(), subs=(), creators=(),
-               enrich=None, linkcheck=None, filescan=None) -> str:
+               enrich=None, linkcheck=None, filescan=None,
+               playlists=(), dupe_count=0, dead_count=0) -> str:
     """Media center: filterable video grid + lightbox player."""
     cards = []
     js_items = []
@@ -495,7 +731,9 @@ def media_page(links, q="", author="", subreddit="", creator="", fav=0,
                          "title": title, "author": link.author or "",
                          "creator": link.creator or "", "sub": link.subreddit or "",
                          "fav": bool(link.favorite), "score": link.score or 0,
-                         "duration": link.duration or 0, "local": local})
+                         "duration": link.duration or 0, "local": local,
+                         "views": link.views or 0, "likes": link.likes or 0,
+                         "tags": link.tags or ""})
 
     def opts(pairs, current, label):
         out = [f'<option value="">{label}</option>']
@@ -575,10 +813,12 @@ def media_page(links, q="", author="", subreddit="", creator="", fav=0,
   <form method="post" action="/media/scan-files">
     <button type="submit" class="btn"{" disabled" if fs_state.get("running") else ""}>📁 Scan local files</button>
   </form>
+  <a class="btn" href="/dupes">🧹 Dupes{f' ({dupe_count})' if dupe_count else ''}</a>
+  <a class="btn" href="/graveyard">🪦 Graveyard{f' ({dead_count})' if dead_count else ''}</a>
   <span class="dim">Refresh pulls thumbnails, scores and durations from your saved posts. Dead-link check verifies every URL. Scan local files matches your JDownloader downloads so videos play from disk — no regional blocks. All run in the background.</span>
 </div>
 {tools}
-<p class="dim">{len(links)} video{'s' if len(links) != 1 else ''}</p>
+<p class="dim">{len(links)} item{'s' if len(links) != 1 else ''}</p>
 <div class="mgrid">
 {''.join(cards) if cards else '<p class="dim">Nothing here — try clearing the filters.</p>'}
 </div>
@@ -589,17 +829,20 @@ def media_page(links, q="", author="", subreddit="", creator="", fav=0,
     <div class="lb-meta">
       <h3 id="lb-title"></h3>
       <p id="lb-sub" class="dim"></p>
+      <p id="lb-tags" class="dim"></p>
       <p id="lb-note" class="dim"></p>
       <div class="lb-actions">
         <button class="btn" onclick="lbNav(-1)">◀</button>
         <button class="btn" onclick="lbNav(1)">▶</button>
         <button class="btn" id="lb-fav" onclick="toggleFav(MEDIA[lbIndex].id)">☆</button>
+        <select id="lb-pl" class="btn" title="Add to playlist"></select>
+        <button class="btn" id="lb-pl-add" onclick="addToPlaylist()">＋ List</button>
         <a class="btn" id="lb-open" target="_blank" rel="noopener">Open original ↗</a>
         <button class="btn" onclick="closeLb()">✕</button>
       </div>
     </div>
   </div>
 </div>
-<script>{LB_JS.replace("__MEDIA_JSON__", json.dumps(js_items))}</script>
+<script>{LB_JS.replace("__MEDIA_JSON__", json.dumps(js_items)).replace("__PLAYLISTS_JSON__", json.dumps([{"id": p.id, "name": p.name} for p in playlists]))}</script>
 """
     return layout("Media", body, active="media")

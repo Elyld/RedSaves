@@ -7,6 +7,7 @@ import threading
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
@@ -17,7 +18,7 @@ from app import pages, scheduler
 from app import scanner as scan_mod
 from app import stats
 from app.database import DATA_DIR, get_session, init_db
-from app.models import Link, Run
+from app.models import Link, Playlist, PlaylistItem, Run
 from app.version import APP_NAME, VERSION
 
 
@@ -190,7 +191,11 @@ def media(q: str = Query(default=""), author: str = Query(default=""),
             ranked(Link.author), ranked(Link.subreddit), ranked(Link.creator),
             enrich=scan_mod.get_enrich_progress(),
             linkcheck=scan_mod.get_linkcheck_progress(),
-            filescan=scan_mod.get_filescan_progress())
+            filescan=scan_mod.get_filescan_progress(),
+            playlists=session.query(Playlist).order_by(Playlist.name).all(),
+            dupe_count=len(scan_mod.find_dupe_groups()),
+            dead_count=session.query(func.count(Link.id))
+            .filter(Link.alive.is_(False)).scalar() or 0)
     finally:
         session.close()
 
@@ -267,6 +272,213 @@ def media_scan_files():
 @app.get("/api/filescan-status")
 def api_filescan_status():
     return scan_mod.get_filescan_progress()
+
+
+def _stats_ctx(session) -> dict:
+    """Collection stats for the Stats page."""
+    total = session.query(func.count(Link.id)).scalar() or 0
+    urls = [u for (u,) in session.query(Link.url).all()]
+
+    def is_pic(url: str) -> bool:
+        try:
+            path = urlsplit(url).path.lower()
+        except Exception:
+            return False
+        return path.endswith(scan_mod.IMAGE_EXTS)
+
+    pics = sum(1 for u in urls if is_pic(u))
+    favs = session.query(func.count(Link.id)).filter(Link.favorite.is_(True)).scalar() or 0
+    dead = session.query(func.count(Link.id)).filter(Link.alive.is_(False)).scalar() or 0
+    local = session.query(func.count(Link.id)).filter(Link.local_file != "").scalar() or 0
+    play_secs = session.query(func.sum(Link.duration)).filter(Link.duration.isnot(None)).scalar() or 0
+    views = session.query(func.sum(Link.views)).filter(Link.views.isnot(None)).scalar() or 0
+
+    def ranked(col, limit=10):
+        return [(r[0] or "?", r[1]) for r in
+                session.query(col, func.count(Link.id))
+                .filter(col != "", col.isnot(None)).group_by(col)
+                .order_by(desc(func.count(Link.id)), col).limit(limit).all()]
+
+    month_rows = (session.query(
+        func.strftime("%Y-%m", func.coalesce(Link.sent_at, Link.found_at)),
+        func.count(Link.id))
+        .group_by(func.strftime("%Y-%m", func.coalesce(Link.sent_at, Link.found_at)))
+        .order_by(func.strftime("%Y-%m", func.coalesce(Link.sent_at, Link.found_at)))
+        .all())
+    monthly = []
+    for ym, count in month_rows[-12:]:
+        try:
+            label = datetime.strptime(ym, "%Y-%m").strftime("%b %Y")
+        except (TypeError, ValueError):
+            continue
+        monthly.append((label, count))
+
+    h, rem = divmod(int(play_secs), 3600)
+    playtime = f"{h}h {rem // 60}m" if h else f"{rem // 60}m {rem % 60}s"
+    return {
+        "total": total, "pics": pics, "clips": total - pics,
+        "favs": favs, "dead": dead, "local": local,
+        "playtime": playtime, "views": views,
+        "top_authors": ranked(Link.author),
+        "top_subs": ranked(Link.subreddit),
+        "top_creators": ranked(Link.creator),
+        "monthly": monthly,
+    }
+
+
+@app.get("/stats", response_class=HTMLResponse)
+def stats_view():
+    session = get_session()
+    try:
+        return pages.stats_page(_stats_ctx(session))
+    finally:
+        session.close()
+
+
+@app.get("/playlists", response_class=HTMLResponse)
+def playlists():
+    session = get_session()
+    try:
+        out = []
+        for pl in session.query(Playlist).order_by(Playlist.name).all():
+            count = (session.query(func.count(PlaylistItem.id))
+                     .filter(PlaylistItem.playlist_id == pl.id).scalar() or 0)
+            out.append((pl, count))
+        return pages.playlists_page(out)
+    finally:
+        session.close()
+
+
+@app.post("/playlists")
+def playlist_create(name: str = Form(...)):
+    name = (name or "").strip()[:128]
+    if not name:
+        return RedirectResponse("/playlists", status_code=303)
+    session = get_session()
+    try:
+        session.add(Playlist(name=name, created_at=datetime.now()))
+        session.commit()
+    finally:
+        session.close()
+    return RedirectResponse("/playlists", status_code=303)
+
+
+@app.post("/playlists/{playlist_id}/delete")
+def playlist_delete(playlist_id: int):
+    session = get_session()
+    try:
+        session.query(PlaylistItem).filter(
+            PlaylistItem.playlist_id == playlist_id).delete(synchronize_session=False)
+        session.query(Playlist).filter(Playlist.id == playlist_id).delete(
+            synchronize_session=False)
+        session.commit()
+    finally:
+        session.close()
+    return RedirectResponse("/playlists", status_code=303)
+
+
+@app.get("/playlists/{playlist_id}", response_class=HTMLResponse)
+def playlist_detail(playlist_id: int):
+    session = get_session()
+    try:
+        pl = session.query(Playlist).filter(Playlist.id == playlist_id).first()
+        if not pl:
+            raise HTTPException(status_code=404, detail="playlist not found")
+        links = (session.query(Link)
+                 .join(PlaylistItem, PlaylistItem.link_id == Link.id)
+                 .filter(PlaylistItem.playlist_id == playlist_id)
+                 .order_by(PlaylistItem.added_at).all())
+        return pages.playlist_detail_page(pl, links)
+    finally:
+        session.close()
+
+
+@app.post("/api/playlists/{playlist_id}/add/{link_id}")
+def playlist_add(playlist_id: int, link_id: int):
+    session = get_session()
+    try:
+        pl = session.query(Playlist).filter(Playlist.id == playlist_id).first()
+        link = session.query(Link).filter(Link.id == link_id).first()
+        if not pl or not link:
+            raise HTTPException(status_code=404, detail="not found")
+        exists = (session.query(PlaylistItem)
+                  .filter(PlaylistItem.playlist_id == playlist_id,
+                          PlaylistItem.link_id == link_id).first())
+        if not exists:
+            session.add(PlaylistItem(playlist_id=playlist_id, link_id=link_id,
+                                    added_at=datetime.now()))
+            session.commit()
+        return JSONResponse({"ok": True})
+    finally:
+        session.close()
+
+
+@app.post("/api/playlists/{playlist_id}/remove/{link_id}")
+def playlist_remove(playlist_id: int, link_id: int):
+    session = get_session()
+    try:
+        session.query(PlaylistItem).filter(
+            PlaylistItem.playlist_id == playlist_id,
+            PlaylistItem.link_id == link_id).delete(synchronize_session=False)
+        session.commit()
+    finally:
+        session.close()
+    return RedirectResponse(f"/playlists/{playlist_id}", status_code=303)
+
+
+@app.get("/dupes", response_class=HTMLResponse)
+def dupes():
+    return pages.dupes_page(scan_mod.find_dupe_groups())
+
+
+@app.post("/dupes/merge")
+def dupes_merge(winner_id: int = Form(...), loser_ids: str = Form(default="")):
+    losers = [int(x) for x in loser_ids.split(",") if x.strip().isdigit()]
+    scan_mod.merge_dupe_group(winner_id, losers)
+    return RedirectResponse("/dupes", status_code=303)
+
+
+@app.post("/dupes/merge-all")
+def dupes_merge_all():
+    for g in scan_mod.find_dupe_groups():
+        scan_mod.merge_dupe_group(g["winner_id"],
+                                  [l.id for l in g["links"]])
+    return RedirectResponse("/dupes", status_code=303)
+
+
+@app.get("/graveyard", response_class=HTMLResponse)
+def graveyard():
+    session = get_session()
+    try:
+        links = (session.query(Link).filter(Link.alive.is_(False))
+                 .order_by(desc(Link.checked_at)).all())
+        return pages.graveyard_page(links)
+    finally:
+        session.close()
+
+
+@app.post("/graveyard/purge")
+def graveyard_purge():
+    session = get_session()
+    try:
+        (session.query(Link).filter(Link.alive.is_(False))
+         .delete(synchronize_session=False))
+        session.commit()
+    finally:
+        session.close()
+    return RedirectResponse("/graveyard", status_code=303)
+
+
+@app.post("/graveyard/delete/{link_id}")
+def graveyard_delete(link_id: int):
+    session = get_session()
+    try:
+        session.query(Link).filter(Link.id == link_id).delete(
+            synchronize_session=False)
+        session.commit()
+    finally:
+        session.close()
+    return RedirectResponse("/graveyard", status_code=303)
 
 
 @app.get("/logs", response_class=HTMLResponse)

@@ -1,13 +1,39 @@
 # RedSaves
 
 Reddit saved-posts → JDownloader, now with a WebUI. Scans your Reddit saved
-posts twice daily for media (`.gif`, `.mp4`, redgifs, v.redd.it) and sends new
-links to JDownloader, with Pushover notifications. The scan behavior is
+posts twice daily for media (`.gif`, `.mp4`, `.jpg`, `.png`, `.webp`, redgifs,
+v.redd.it) and sends new links to JDownloader, with Pushover notifications. The scan behavior is
 unchanged from the standalone `RedSaves2.0.py` script — the container just
 gives it a real history database, a dashboard, and its own scheduler.
 
 ## Changelog
 
+- **v2.12.0** — Pictures are first-class media (`.jpg`/`.png`/`.webp`/`.jpeg`
+  now collected, viewable, and matched to local downloads — previously only
+  `.gif`/`.mp4`/redgifs/v.redd.it were picked up); **🧹 Dupes** detector
+  (same post saved twice, or same file under two URL forms — merge keeps the
+  auto-picked winner); **🪦 Graveyard** (dead links with bulk purge);
+  **Stats** page (pics vs clips, playtime, views, top posters/subreddits/
+  creators, monthly growth); **Playlists** (named collections, ＋ List button
+  in the player); redgifs tags/views/likes captured during the dead-link check
+  (zero extra requests) and shown in the player.
+- **v2.11.0** — Local playback: `MEDIA_DIR` + downloads volume mount, "📁 Scan
+  local files" matches JDownloader downloads to links by slug/id in the
+  filename, `/media-file/{id}` streams with path-traversal protection, media
+  center prefers local files (📁 badge) — bypasses regional blocks on redgifs
+  embeds entirely.
+- **v2.10.0** — Media-data collection: scan-time capture of score, comment
+  count, thumbnail, duration, domain, `created_utc` (zero extra requests);
+  "↻ Refresh metadata" backfill button (never touches titles); dead-link
+  checker (redgifs via API temp token, rest via HEAD, ~1 req/s background,
+  marks alive/dead/file size/checked_at, captures redgifs creator profile,
+  never false-flags on API hiccups); media page shows thumbnails,
+  duration/score badges, dead badges + hide-dead filter, creator filter.
+- **v2.9.0** — Media center (`/media`): filterable video grid (search,
+  poster/creator/subreddit dropdowns with counts, newest/oldest,
+  favorites-only), hover-to-preview, lightbox player (prev/next, arrow keys,
+  shuffle, auto-advance on end), redgifs via ifr embeds, v.redd.it/imgur
+  direct; ★ favorite toggle on every card.
 - **v2.8.0** — "Enrich missing info": backfills title/author/subreddit for
   imported links via Reddit's `/api/info` (polite 1.2s throttle, background
   thread, progress on the History page, never overwrites existing titles).

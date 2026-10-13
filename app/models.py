@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from sqlalchemy import Boolean, Column, DateTime, Integer, String, Text
+from sqlalchemy import Boolean, Column, DateTime, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import declarative_base
 
 Base = declarative_base()
@@ -39,6 +39,34 @@ class Link(Base):
     # v2.11.0: local playback — path of the downloaded file, relative to
     # MEDIA_DIR (Kansas blocks redgifs embeds; disk never does)
     local_file = Column(Text, default="")
+    # v2.12.0: redgifs deep data — captured during the dead-link check from
+    # the same API response (zero extra requests)
+    tags = Column(Text, default="")  # comma-joined redgifs tags
+    views = Column(Integer, nullable=True)
+    likes = Column(Integer, nullable=True)
+
+
+class Playlist(Base):
+    """A named collection of links, e.g. 'favorites of the month'."""
+
+    __tablename__ = "playlists"
+
+    id = Column(Integer, primary_key=True)
+    name = Column(String(128), nullable=False)
+    created_at = Column(DateTime, nullable=True)
+
+
+class PlaylistItem(Base):
+    """One link inside a playlist."""
+
+    __tablename__ = "playlist_items"
+    __table_args__ = (UniqueConstraint("playlist_id", "link_id",
+                                       name="uq_playlist_link"),)
+
+    id = Column(Integer, primary_key=True)
+    playlist_id = Column(Integer, nullable=False)
+    link_id = Column(Integer, nullable=False)
+    added_at = Column(DateTime, nullable=True)
 
 
 class Run(Base):

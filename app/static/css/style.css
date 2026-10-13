@@ -185,3 +185,11 @@ h2 { margin-top: 1.8rem; border-bottom: 1px solid var(--line); padding-bottom: 0
 .mbadge.dead { background: rgba(120,10,20,0.85); }
 .mthumb { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; z-index: 1; }
 .mcard.isdead { opacity: 0.55; }
+
+/* v2.12.0: dupes, graveyard, playlists */
+.dupegroup { border: 1px solid var(--line); border-radius: 8px; padding: 0.8rem 1rem; margin: 1rem 0; background: var(--panel); }
+.dupegroup h3 { margin: 0 0 0.5rem; }
+.btn.danger { border-color: #a33; color: #f88; }
+.lb-actions select.btn { background: var(--panel); color: inherit; border: 1px solid var(--line); border-radius: 4px; padding: 0.25rem 0.5rem; }
+#lb-tags { font-size: 0.85rem; }
+.mediatools a.btn { text-decoration: none; display: inline-block; }
