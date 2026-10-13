@@ -11,6 +11,7 @@ Stdlib only: no pip packages needed.
 """
 
 import json
+import re
 import sys
 import urllib.error
 import urllib.parse
@@ -20,6 +21,7 @@ PLUGIN_ID = "redsaves"
 STASH_GRAPHQL = "http://localhost:9999/graphql"
 MARKER_TAG = "RedSaves"  # added to every processed scene; skips re-processing
 MAX_TAGS = 12
+_ALIAS_RE = re.compile(r"is used as alias for '([^']+)'")
 
 _api_key = ""
 
@@ -30,7 +32,8 @@ def log(msg):
 
 # --- Stash GraphQL ---------------------------------------------------------------
 
-def gql(query, variables=None):
+def gql_raw(query, variables=None):
+    """Full response body (data + errors), or None on transport failure."""
     payload = json.dumps({"query": query, "variables": variables or {}}).encode()
     req = urllib.request.Request(
         STASH_GRAPHQL, data=payload,
@@ -39,12 +42,17 @@ def gql(query, variables=None):
         req.add_header("ApiKey", _api_key)
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
-            body = json.loads(resp.read().decode("utf-8", "replace"))
+            return json.loads(resp.read().decode("utf-8", "replace"))
     except urllib.error.HTTPError as e:
         log(f"GraphQL HTTP {e.code}")
-        return None
     except Exception as e:  # timeouts, connection refused, ...
         log(f"GraphQL error: {e}")
+    return None
+
+
+def gql(query, variables=None):
+    body = gql_raw(query, variables)
+    if not body:
         return None
     if body.get("errors"):
         log(f"GraphQL errors: {json.dumps(body['errors'])[:300]}")
@@ -121,13 +129,34 @@ def plugin_settings():
     return settings
 
 
+def _create_named(create_query, name, kind):
+    """Create a tag/performer; if Stash rejects the name as an alias of an
+    existing one, resolve to the canonical entry instead."""
+    body = gql_raw(create_query, {"name": name})
+    if not body:
+        return None
+    created = (body.get("data") or {}).get(
+        "tagCreate" if kind == "tag" else "performerCreate") or {}
+    if created.get("id"):
+        return created["id"]
+    errs = json.dumps(body.get("errors") or "")
+    m = _ALIAS_RE.search(errs)
+    if m:
+        canonical = m.group(1)
+        log(f"{kind} '{name}' is an alias of '{canonical}' - using that")
+        if kind == "tag":
+            return find_or_create_tag(canonical)
+        return find_or_create_performer(canonical)
+    log(f"{kind}Create failed for '{name}': {errs[:200]}")
+    return None
+
+
 def find_or_create_performer(name):
     data = gql(FIND_PERFORMER, {"name": name})
     performers = ((data or {}).get("findPerformers") or {}).get("performers") or []
     if performers:
         return performers[0]["id"]
-    data = gql(PERFORMER_CREATE, {"name": name})
-    return ((data or {}).get("performerCreate") or {}).get("id")
+    return _create_named(PERFORMER_CREATE, name, "performer")
 
 
 def find_or_create_tag(name):
@@ -135,8 +164,7 @@ def find_or_create_tag(name):
     tags = ((data or {}).get("findTags") or {}).get("tags") or []
     if tags:
         return tags[0]["id"]
-    data = gql(TAG_CREATE, {"name": name})
-    return ((data or {}).get("tagCreate") or {}).get("id")
+    return _create_named(TAG_CREATE, name, "tag")
 
 
 # --- RedSaves --------------------------------------------------------------------
