@@ -29,6 +29,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import requests
 from dotenv import load_dotenv
@@ -122,18 +123,51 @@ def get_enrich_progress() -> dict:
     return dict(_enrich_progress)
 
 
+def _canonicalize_url(url):
+    """Normalize a saved media URL to the post form Reddit likely indexed.
+
+    Only used for the /api/info lookup — the stored URL is never rewritten.
+    """
+    try:
+        p = urlsplit(url)
+        host = (p.hostname or "").lower()
+        path = p.path or ""
+        if host == "v.redd.it":
+            # v.redd.it/{id}/CMAF_1080.mp4 -> v.redd.it/{id}
+            segs = [s for s in path.split("/") if s]
+            if segs:
+                return f"https://v.redd.it/{segs[0]}"
+            return url
+        if host in ("redgifs.com", "www.redgifs.com", "v3.redgifs.com"):
+            # v3.redgifs.com -> www.redgifs.com; /ifr/{slug} -> /watch/{slug}
+            segs = [s for s in path.split("/") if s]
+            if len(segs) >= 2 and segs[0] == "ifr":
+                path = "/watch/" + "/".join(segs[1:])
+            return f"https://www.redgifs.com{path}"
+        # default: lowercase host, drop query/fragment
+        return f"{p.scheme.lower()}://{host}{path}"
+    except Exception:
+        return url
+
+
 def _url_variants(url):
-    """The URL plus cheap normalized variants for /api/info lookup.
+    """The canonical post form of the URL plus cheap normalized variants
+    for /api/info lookup.
 
     Reddit indexes the submission URL as-submitted; a saved file often holds
-    a slightly different form (www vs bare host, http vs https). Try the
-    original first, then up to 3 variants.
+    a slightly different form (www vs bare host, http vs https, media-file
+    path on v.redd.it, v3/ifr redgifs forms). Try the canonical form first,
+    then the raw URL and scheme/www toggles.
     """
-    cands = [url]
-    if url.startswith("https://"):
-        cands.append("http://" + url[len("https://"):])
-    elif url.startswith("http://"):
-        cands.append("https://" + url[len("http://"):])
+    cands = []
+    canonical = _canonicalize_url(url)
+    cands.append(canonical)
+    if url != canonical:
+        cands.append(url)
+    if canonical.startswith("https://"):
+        cands.append("http://" + canonical[len("https://"):])
+    elif canonical.startswith("http://"):
+        cands.append("https://" + canonical[len("http://"):])
     out = list(cands)
     for v in cands:
         m = re.match(r"(https?://)(www\.)?(.*)", v)
@@ -148,7 +182,7 @@ def _url_variants(url):
         if v not in seen:
             seen.add(v)
             uniq.append(v)
-    return uniq[:4]
+    return uniq[:5]
 
 
 def fetch_info_by_url(config: ScanConfig, token, url):
@@ -212,6 +246,76 @@ def apply_enrichment(link_id: int, meta: dict) -> None:
         session.close()
 
 
+def _iter_all_saved_posts(config: ScanConfig, token):
+    """Yield raw saved-post data dicts, paging through the *entire* saved
+    list via the `after` cursor (100 per page). Stops on error."""
+    headers = {'Authorization': f'bearer {token}', 'User-Agent': 'RedSaves v2.4'}
+    after = None
+    pages = 0
+    while True:
+        params = {'limit': 100}
+        if after:
+            params['after'] = after
+        try:
+            response = requests.get(
+                f'https://oauth.reddit.com/user/{config.reddit_username}/saved',
+                params=params, headers=headers, timeout=REQUEST_TIMEOUT)
+        except Exception as e:
+            log_error(f"Saved-scan: error fetching page {pages + 1}: {e}")
+            return
+        if response.status_code != 200:
+            log_error(f"Saved-scan: HTTP {response.status_code} on page {pages + 1}")
+            return
+        data = (response.json() or {}).get('data') or {}
+        children = data.get('children') or []
+        pages += 1
+        for child in children:
+            yield (child or {}).get('data') or {}
+        after = data.get('after')
+        if not after or not children:
+            break
+        _throttle()
+    log_info(f"Saved-scan: paged through {pages} saved page(s).")
+
+
+def _run_deep_match(config: ScanConfig, token) -> int:
+    """Phase 2 of enrichment: match still-title-less links against the full
+    saved-posts list by canonical URL. Never adds new links — metadata
+    backfill only. Returns the number matched."""
+    remaining = titleless_links()
+    want = {}
+    for link_id, url in remaining:
+        want.setdefault(_canonicalize_url(url), link_id)
+    if not want:
+        return 0
+    matched = 0
+    scanned = 0
+    for post in _iter_all_saved_posts(config, token):
+        scanned += 1
+        url = post.get('url', '') or ''
+        if not any(ext in url for ext in MEDIA_MARKERS):
+            continue
+        link_id = want.pop(_canonicalize_url(url), None)
+        if link_id is None:
+            continue
+        apply_enrichment(link_id, {
+            'post_title': post.get('title', ''),
+            'post_permalink': post.get('permalink', ''),
+            'subreddit': (post.get('subreddit') or ''),
+            'author': (post.get('author') or ''),
+            'created_utc': post.get('created_utc'),
+        })
+        matched += 1
+        _enrich_progress['found'] += 1
+        _enrich_progress['processed'] += 1
+        if not want:
+            break
+    _enrich_progress['skipped'] = len(want)
+    log_info(f"Saved-scan: matched {matched} link(s) from {scanned} saved post(s); "
+             f"{len(want)} still without metadata.")
+    return matched
+
+
 def run_enrich(config: ScanConfig | None = None) -> bool:
     """Run metadata enrichment to completion. Returns False immediately when
     another enrichment is already running (never two concurrently)."""
@@ -227,8 +331,8 @@ def run_enrich(config: ScanConfig | None = None) -> bool:
 
 def _run_enrich(config: ScanConfig | None) -> None:
     global _enrich_progress
-    _enrich_progress = {"running": True, "processed": 0, "total": 0,
-                        "found": 0, "skipped": 0}
+    _enrich_progress = {"running": True, "phase": "lookup", "processed": 0,
+                        "total": 0, "found": 0, "skipped": 0}
     try:
         set_enrich_note("")  # clear any previous abort note; re-set below if needed
         if config is None:
@@ -256,9 +360,17 @@ def _run_enrich(config: ScanConfig | None) -> None:
                 _enrich_progress["skipped"] += 1
             _enrich_progress["processed"] += 1
             _throttle()
+        # Phase 2: sweep the full saved list for anything the lookup missed.
+        _enrich_progress["phase"] = "saved-scan"
+        still_missing = titleless_count()
+        _enrich_progress["total"] = still_missing
+        _enrich_progress["processed"] = 0
+        if still_missing:
+            log_info(f"Enrich phase 2: scanning saved posts for "
+                     f"{still_missing} unmatched link(s).")
+            _run_deep_match(config, token)
         log_info(f"Enrich finished: {_enrich_progress['found']} enriched, "
-                 f"{_enrich_progress['skipped']} skipped, "
-                 f"of {_enrich_progress['total']} processed.")
+                 f"{_enrich_progress['skipped']} still missing metadata.")
     finally:
         _enrich_progress["running"] = False
 
