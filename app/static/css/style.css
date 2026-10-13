@@ -160,7 +160,7 @@ h2 { margin-top: 1.8rem; border-bottom: 1px solid var(--line); padding-bottom: 0
 .mcard:hover { transform: translateY(-2px); box-shadow: 0 4px 18px rgba(0,0,0,0.45), 0 0 12px var(--accent-glow); }
 .mprev { position: relative; aspect-ratio: 16/10; background: #0c0e11; overflow: hidden; }
 .mprev iframe, .mprev video, .mprev img { width: 100%; height: 100%; object-fit: cover; border: 0; display: block; pointer-events: none; }
-.mplay { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 2rem; color: rgba(255,255,255,0.85); text-shadow: 0 2px 8px rgba(0,0,0,0.8); pointer-events: none; }
+.mplay { position: absolute; inset: 0; z-index: 2; display: flex; align-items: center; justify-content: center; font-size: 2rem; color: rgba(255,255,255,0.85); text-shadow: 0 2px 8px rgba(0,0,0,0.8); pointer-events: none; }
 .mcard:hover .mplay { color: var(--accent); }
 .mstar { position: absolute; top: 0.3rem; right: 0.3rem; background: rgba(0,0,0,0.55); border: 1px solid var(--line); border-radius: 6px; color: #8a8f98; font-size: 1rem; padding: 0.1rem 0.4rem; cursor: pointer; z-index: 2; }
 .mstar.on { color: #ffd34d; border-color: #ffd34d; }
@@ -177,3 +177,11 @@ h2 { margin-top: 1.8rem; border-bottom: 1px solid var(--line); padding-bottom: 0
 .lb-actions { display: flex; gap: 0.5rem; margin-top: 0.7rem; flex-wrap: wrap; align-items: center; }
 .lb-actions .btn { text-decoration: none; }
 #lb-fav.on { color: #ffd34d; border-color: #ffd34d; }
+
+/* Media center: data badges + tools */
+.mediatools { display: flex; gap: 0.6rem; align-items: center; flex-wrap: wrap; margin: 0.6rem 0; }
+.mediatools .dim { flex: 1 1 20rem; font-size: 0.85rem; }
+.mbadge { position: absolute; bottom: 0.3rem; z-index: 2; left: 0.3rem; background: rgba(0,0,0,0.65); color: #fff; font-size: 0.7rem; padding: 0.1rem 0.4rem; border-radius: 4px; margin-right: 0.25rem; }
+.mbadge.dead { background: rgba(120,10,20,0.85); }
+.mthumb { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; z-index: 1; }
+.mcard.isdead { opacity: 0.55; }

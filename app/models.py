@@ -26,6 +26,16 @@ class Link(Base):
     status = Column(String(16), nullable=False, default="sent")
     run_id = Column(Integer, nullable=True)
     favorite = Column(Boolean, nullable=False, default=False)
+    # v2.10.0 media-data columns (all auto-migrated, nullable/defaulted)
+    score = Column(Integer, nullable=False, default=0)
+    num_comments = Column(Integer, nullable=False, default=0)
+    thumbnail = Column(Text, default="")
+    duration = Column(Integer, nullable=True)  # seconds, when known
+    domain = Column(String(64), default="")
+    creator = Column(String(128), default="")  # redgifs creator profile
+    alive = Column(Boolean, nullable=False, default=True)
+    checked_at = Column(DateTime, nullable=True)
+    file_size = Column(Integer, nullable=True)  # bytes, when known
 
 
 class Run(Base):
