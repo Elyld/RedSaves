@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from sqlalchemy import Boolean, Column, DateTime, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, Column, DateTime, Float, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import declarative_base
 
 Base = declarative_base()
@@ -44,6 +44,11 @@ class Link(Base):
     tags = Column(Text, default="")  # comma-joined redgifs tags
     views = Column(Integer, nullable=True)
     likes = Column(Integer, nullable=True)
+    # v2.13.0: reddit post flair + upvote ratio (free in the listing payload),
+    # and JDownloader download state from the status sync
+    flair = Column(String(128), default="")
+    upvote_ratio = Column(Float, nullable=True)
+    jd_status = Column(String(16), default="")  # done|downloading|queued|failed
 
 
 class Playlist(Base):

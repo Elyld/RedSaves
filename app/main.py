@@ -192,6 +192,7 @@ def media(q: str = Query(default=""), author: str = Query(default=""),
             enrich=scan_mod.get_enrich_progress(),
             linkcheck=scan_mod.get_linkcheck_progress(),
             filescan=scan_mod.get_filescan_progress(),
+            jdsync=scan_mod.get_jdsync_progress(),
             playlists=session.query(Playlist).order_by(Playlist.name).all(),
             dupe_count=len(scan_mod.find_dupe_groups()),
             dead_count=session.query(func.count(Link.id))
@@ -272,6 +273,21 @@ def media_scan_files():
 @app.get("/api/filescan-status")
 def api_filescan_status():
     return scan_mod.get_filescan_progress()
+
+
+@app.post("/media/sync-jd")
+def media_sync_jd():
+    """Sync each link's download state from JDownloader in the background."""
+    if scan_mod._jdsync_lock.locked():
+        raise HTTPException(status_code=409, detail="already running")
+    thread = threading.Thread(target=scan_mod.run_jd_sync, daemon=True)
+    thread.start()
+    return RedirectResponse(url="/media", status_code=303)
+
+
+@app.get("/api/jdsync-status")
+def api_jdsync_status():
+    return scan_mod.get_jdsync_progress()
 
 
 def _stats_ctx(session) -> dict:
@@ -447,26 +463,24 @@ def dupes_merge_all():
 
 
 @app.get("/graveyard", response_class=HTMLResponse)
-def graveyard():
+def graveyard(deleted: int = Query(default=None),
+              skipped: int = Query(default=None)):
     session = get_session()
     try:
         links = (session.query(Link).filter(Link.alive.is_(False))
                  .order_by(desc(Link.checked_at)).all())
-        return pages.graveyard_page(links)
+        return pages.graveyard_page(links, deleted=deleted, skipped=skipped)
     finally:
         session.close()
 
 
 @app.post("/graveyard/purge")
 def graveyard_purge():
-    session = get_session()
-    try:
-        (session.query(Link).filter(Link.alive.is_(False))
-         .delete(synchronize_session=False))
-        session.commit()
-    finally:
-        session.close()
-    return RedirectResponse("/graveyard", status_code=303)
+    """Bulk-delete dead links, except ones backed by a file we have."""
+    result = scan_mod.purge_graveyard()
+    return RedirectResponse(
+        f"/graveyard?deleted={result['deleted']}&skipped={result['skipped']}",
+        status_code=303)
 
 
 @app.post("/graveyard/delete/{link_id}")
