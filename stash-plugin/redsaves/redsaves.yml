@@ -22,7 +22,6 @@ settings:
     displayName: Dry run
     description: Log what would change without applying it
     type: BOOLEAN
-    default: false
 
 hooks:
   - name: Tag new scenes from RedSaves
