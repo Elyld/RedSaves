@@ -198,6 +198,8 @@ def fetch_info_by_url(config: ScanConfig, token, url):
     try:
         headers = {'Authorization': f'bearer {token}', 'User-Agent': 'RedSaves v2.4'}
         for attempt in _url_variants(url):
+            _throttle()  # every request, not just every link: variants would
+            # otherwise burst 5x faster than Reddit's rate limit allows
             response = requests.get('https://oauth.reddit.com/api/info',
                                     params={'url': attempt},
                                     headers=headers, timeout=REQUEST_TIMEOUT)
@@ -384,7 +386,8 @@ def _run_enrich(config: ScanConfig | None) -> None:
             else:
                 _enrich_progress["skipped"] += 1
             _enrich_progress["processed"] += 1
-            _throttle()
+            # (no extra throttle here: fetch_info_by_url already throttles
+            # before every request, which spaces links apart too)
         # Phase 2: sweep the full saved list for anything the lookup missed.
         _enrich_progress["phase"] = "saved-scan"
         still_missing = titleless_count()
