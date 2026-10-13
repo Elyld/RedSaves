@@ -46,6 +46,7 @@ def init_db() -> None:
     get_engine()
     Base.metadata.create_all(_engine)
     _ensure_author_column()
+    _ensure_source_column()
     migrate_legacy_history()
 
 
@@ -57,6 +58,16 @@ def _ensure_author_column() -> None:
         with _engine.begin() as conn:
             conn.execute(text("ALTER TABLE links ADD COLUMN author VARCHAR(128) DEFAULT ''"))
         logger.info("added links.author column")
+
+
+def _ensure_source_column() -> None:
+    """Add links.source to databases created before v2.7.0 (same no-Alembic
+    guard pattern as _ensure_author_column)."""
+    cols = [c["name"] for c in inspect(_engine).get_columns("links")]
+    if "source" not in cols:
+        with _engine.begin() as conn:
+            conn.execute(text("ALTER TABLE links ADD COLUMN source VARCHAR(16) DEFAULT 'saved'"))
+        logger.info("added links.source column")
 
 
 def migrate_legacy_history() -> int:
