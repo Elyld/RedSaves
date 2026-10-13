@@ -23,8 +23,13 @@ services:
       # --- Pushover ---
       - PUSHOVER_USER_KEY=
       - PUSHOVER_API_TOKEN=
+      # --- Local media (v2.11.0): where JDownloader downloads live on the
+      # host, so the media center can play files from disk (bypasses regional
+      # blocks). Mount it read-only and point MEDIA_DIR at the mount.
+      - MEDIA_DIR=/downloads
     volumes:
       - redsaves-data:/data
+      - /path/to/your/downloads:/downloads:ro
     restart: unless-stopped
 
 volumes:

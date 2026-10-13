@@ -150,14 +150,18 @@ def _post_duration(data):
         return None
 
 
-def media_embed(url):
+def media_embed(url, link_id=None, local_file=""):
     """How to play a stored URL in the media center. Returns (kind, src):
 
+    - ('video', '/media-file/{id}'): downloaded file on local disk — preferred,
+      bypasses regional blocks entirely
     - ('redgifs', ifr_url): embeddable redgifs player for watch/ifr/v3 forms
     - ('video', url): direct mp4 (v.redd.it media files, imgur mp4)
     - ('image', url): direct gif (i.redd.it, imgur gif)
     - ('link', url): anything else — open the original in a new tab
     """
+    if local_file and link_id is not None:
+        return ("video", f"/media-file/{link_id}")
     try:
         p = urlsplit(url)
         host = (p.hostname or "").lower()
@@ -593,6 +597,108 @@ def _run_link_check() -> None:
         _linkcheck_progress["running"] = False
     log_info(f"Link check finished: {_linkcheck_progress['dead']} dead "
              f"of {len(links)} checked.")
+
+
+# --- Local file index ----------------------------------------------------------
+
+def media_dir() -> Path:
+    """Where JDownloader downloads live, as seen from this container.
+    Mount the downloads folder here and it's the only thing to configure."""
+    return Path(os.environ.get("MEDIA_DIR", "/downloads"))
+
+
+VIDEO_EXTS = {".mp4", ".webm", ".gif", ".mov", ".mkv"}
+
+
+def media_keys(url) -> list:
+    """Match keys for finding a link's downloaded file: the redgifs slug,
+    the v.redd.it id, or the image id — whatever JDownloader likely kept in
+    the filename."""
+    try:
+        p = urlsplit(url)
+        segs = [s for s in (p.path or "").split("/") if s]
+        host = (p.hostname or "").lower()
+        if (host in ("redgifs.com", "www.redgifs.com", "v3.redgifs.com")
+                and len(segs) >= 2 and segs[0] in ("watch", "ifr")):
+            return [segs[1].lower()]
+        if host == "v.redd.it" and segs:
+            return [segs[0].lower()]
+        if segs:
+            stem = segs[-1].rsplit(".", 1)[0].lower()
+            return [stem] if stem else []
+        return []
+    except Exception:
+        return []
+
+
+_filescan_lock = threading.Lock()
+_filescan_progress = {"running": False, "processed": 0, "total": 0, "matched": 0}
+
+
+def get_filescan_progress() -> dict:
+    return dict(_filescan_progress)
+
+
+def run_filescan() -> bool:
+    """Index downloaded video files and match them to links. Background."""
+    if not _filescan_lock.acquire(blocking=False):
+        log_info("Local file scan skipped: another scan is already running.")
+        return False
+    try:
+        _run_filescan()
+    finally:
+        _filescan_lock.release()
+    return True
+
+
+def _run_filescan() -> None:
+    global _filescan_progress
+    root = media_dir()
+    _filescan_progress = {"running": True, "processed": 0, "total": 0, "matched": 0}
+    try:
+        if not root.is_dir():
+            log_error(f"Local file scan: MEDIA_DIR {root} is not a directory — "
+                      f"mount the downloads folder there.")
+            return
+        indexed = []
+        for dirpath, _, filenames in os.walk(root):
+            for fn in filenames:
+                if Path(fn).suffix.lower() not in VIDEO_EXTS:
+                    continue
+                full = Path(dirpath) / fn
+                try:
+                    size = full.stat().st_size
+                except OSError:
+                    continue
+                if size > 0:
+                    indexed.append((fn.rsplit(".", 1)[0].lower(), full, size))
+        log_info(f"Local file scan: {len(indexed)} video file(s) under {root}.")
+        links = _all_links()
+        _filescan_progress["total"] = len(links)
+        session = get_session()
+        try:
+            for link_id, url in links:
+                keys = [k for k in media_keys(url) if k]
+                best = None
+                best_size = -1
+                for stem, full, size in indexed:
+                    if any(k in stem for k in keys):
+                        if size > best_size:
+                            best, best_size = full, size
+                row = session.query(Link).filter(Link.id == link_id).first()
+                if row is not None and best is not None:
+                    try:
+                        row.local_file = str(best.relative_to(root))
+                    except ValueError:
+                        row.local_file = str(best)
+                    _filescan_progress["matched"] += 1
+                _filescan_progress["processed"] += 1
+                session.commit()
+        finally:
+            session.close()
+    finally:
+        _filescan_progress["running"] = False
+    log_info(f"Local file scan finished: {_filescan_progress['matched']} matched.")
 
 
 def run_enrich(config: ScanConfig | None = None) -> bool:

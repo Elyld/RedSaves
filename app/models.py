@@ -36,6 +36,9 @@ class Link(Base):
     alive = Column(Boolean, nullable=False, default=True)
     checked_at = Column(DateTime, nullable=True)
     file_size = Column(Integer, nullable=True)  # bytes, when known
+    # v2.11.0: local playback — path of the downloaded file, relative to
+    # MEDIA_DIR (Kansas blocks redgifs embeds; disk never does)
+    local_file = Column(Text, default="")
 
 
 class Run(Base):

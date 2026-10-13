@@ -49,6 +49,7 @@ def init_db() -> None:
     _ensure_source_column()
     _ensure_favorite_column()
     _ensure_media_data_columns()
+    _ensure_local_file_column()
     migrate_legacy_history()
 
 
@@ -102,6 +103,15 @@ def _ensure_media_data_columns() -> None:
             if name not in cols:
                 conn.execute(text(f"ALTER TABLE links ADD COLUMN {name} {ddl}"))
                 logger.info(f"added links.{name} column")
+
+
+def _ensure_local_file_column() -> None:
+    """Add links.local_file to databases created before v2.11.0."""
+    cols = [c["name"] for c in inspect(_engine).get_columns("links")]
+    if "local_file" not in cols:
+        with _engine.begin() as conn:
+            conn.execute(text("ALTER TABLE links ADD COLUMN local_file TEXT DEFAULT ''"))
+        logger.info("added links.local_file column")
 
 
 def migrate_legacy_history() -> int:

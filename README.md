@@ -39,8 +39,16 @@ reads these and only these):
 | `REDDIT_USERNAME`    | Reddit username whose saved posts to scan |
 | `PUSHOVER_USER_KEY`  | Pushover user key                       |
 | `PUSHOVER_API_TOKEN` | Pushover API token                      |
+| `MEDIA_DIR`          | Host downloads folder mounted at `/downloads` (v2.11.0: local playback) |
 
 That's it — deploy the stack. The WebUI lands on **port 4003**.
+
+> **Local playback (v2.11.0):** redgifs embeds are region-blocked in some
+> states, so the media center can play your JDownloader downloads straight
+> from disk instead. Mount your downloads folder read-only at `/downloads`
+> in the compose file (see the commented volume), set `MEDIA_DIR=/downloads`,
+> then hit **📁 Scan local files** on the Media page. Matched videos get a
+> 📁 badge and play locally — no regional block involved.
 
 ```yaml
 # dockge-compose.yml — paste into Dockge, fill in Environment, deploy

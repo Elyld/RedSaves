@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import os
 import threading
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 
 from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import desc, func, or_
 
@@ -188,7 +189,8 @@ def media(q: str = Query(default=""), author: str = Query(default=""),
             links, q, author, subreddit, creator, fav, hide_dead, sort,
             ranked(Link.author), ranked(Link.subreddit), ranked(Link.creator),
             enrich=scan_mod.get_enrich_progress(),
-            linkcheck=scan_mod.get_linkcheck_progress())
+            linkcheck=scan_mod.get_linkcheck_progress(),
+            filescan=scan_mod.get_filescan_progress())
     finally:
         session.close()
 
@@ -230,6 +232,41 @@ def media_check_links():
 @app.get("/api/linkcheck-status")
 def api_linkcheck_status():
     return scan_mod.get_linkcheck_progress()
+
+
+@app.get("/media-file/{link_id}")
+def media_file(link_id: int):
+    """Stream a link's locally downloaded file. Path-traversal safe: the
+    stored relative path must resolve inside MEDIA_DIR."""
+    root = scan_mod.media_dir().resolve()
+    session = get_session()
+    try:
+        link = session.query(Link).filter(Link.id == link_id).first()
+        if not link or not link.local_file:
+            raise HTTPException(status_code=404, detail="no local file")
+        full = (root / link.local_file).resolve()
+        if not str(full).startswith(str(root) + os.sep):
+            raise HTTPException(status_code=403, detail="outside media dir")
+        if not full.is_file():
+            raise HTTPException(status_code=404, detail="file gone")
+        return FileResponse(str(full))
+    finally:
+        session.close()
+
+
+@app.post("/media/scan-files")
+def media_scan_files():
+    """Match downloaded video files to links in the background."""
+    if scan_mod._filescan_lock.locked():
+        raise HTTPException(status_code=409, detail="already running")
+    thread = threading.Thread(target=scan_mod.run_filescan, daemon=True)
+    thread.start()
+    return RedirectResponse(url="/media", status_code=303)
+
+
+@app.get("/api/filescan-status")
+def api_filescan_status():
+    return scan_mod.get_filescan_progress()
 
 
 @app.get("/logs", response_class=HTMLResponse)
