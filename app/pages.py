@@ -375,6 +375,10 @@ function renderLb() {
   if (it.duration) bits.push(fmtDur(it.duration));
   document.getElementById('lb-sub').textContent = bits.join(' · ');
   document.getElementById('lb-open').href = it.url;
+  document.getElementById('lb-note').textContent =
+    (it.kind === 'redgifs' && !it.local)
+      ? '⚠️ redgifs embeds are blocked in your region and this one isn\'t downloaded — run “Scan local files” after your next JDownloader batch.'
+      : '';
   document.getElementById('lb-fav').textContent = it.fav ? '★' : '☆';
   document.getElementById('lb-fav').classList.toggle('on', !!it.fav);
   const v = document.querySelector('#lb-player video');
@@ -441,12 +445,13 @@ document.getElementById('mshuffle').addEventListener('click', () => {
 
 def media_page(links, q="", author="", subreddit="", creator="", fav=0,
                hide_dead=0, sort="new", authors=(), subs=(), creators=(),
-               enrich=None, linkcheck=None) -> str:
+               enrich=None, linkcheck=None, filescan=None) -> str:
     """Media center: filterable video grid + lightbox player."""
     cards = []
     js_items = []
     for n, link in enumerate(links):
-        kind, src = media_embed(link.url)
+        kind, src = media_embed(link.url, link.id, link.local_file or "")
+        local = bool(link.local_file)
         title = link.post_title or link.url
         short_title = title if len(title) <= 80 else title[:77] + "..."
         # real thumbnail on top when we have one; falls away if it 404s
@@ -465,6 +470,8 @@ def media_page(links, q="", author="", subreddit="", creator="", fav=0,
         star = "★" if link.favorite else "☆"
         star_cls = "mstar on" if link.favorite else "mstar"
         badges = []
+        if local:
+            badges.append('<span class="mbadge local">📁 local</span>')
         if link.duration:
             m, s = divmod(int(link.duration), 60)
             badges.append(f'<span class="mbadge">{m}:{s:02d}</span>')
@@ -488,7 +495,7 @@ def media_page(links, q="", author="", subreddit="", creator="", fav=0,
                          "title": title, "author": link.author or "",
                          "creator": link.creator or "", "sub": link.subreddit or "",
                          "fav": bool(link.favorite), "score": link.score or 0,
-                         "duration": link.duration or 0})
+                         "duration": link.duration or 0, "local": local})
 
     def opts(pairs, current, label):
         out = [f'<option value="">{label}</option>']
@@ -499,6 +506,7 @@ def media_page(links, q="", author="", subreddit="", creator="", fav=0,
 
     enrich_state = enrich or {}
     lc_state = linkcheck or {}
+    fs_state = filescan or {}
     tools = ""
     if enrich_state.get("running"):
         phase = enrich_state.get("phase")
@@ -512,21 +520,31 @@ def media_page(links, q="", author="", subreddit="", creator="", fav=0,
         tools += (f'<div class="infobox"><p>🩺 Checking links… '
                   f'<span id="lc-counts">{lc_state.get("processed", 0)}/'
                   f'{lc_state.get("total", 0)}, {lc_state.get("dead", 0)} dead</span></p></div>')
+    if fs_state.get("running"):
+        tools += (f'<div class="infobox"><p>📁 Matching local files… '
+                  f'<span id="fs-counts">{fs_state.get("processed", 0)}/'
+                  f'{fs_state.get("total", 0)}, {fs_state.get("matched", 0)} matched</span></p></div>')
     tools += """
 <script>
 (function () {
   var iv = setInterval(function () {
-    var done = 0;
-    fetch('/api/enrich-status').then(r => r.json()).then(s => {
-      var el = document.getElementById('enrich-counts');
-      if (el && s.running) el.textContent = s.processed + '/' + s.total + ', ' + s.found + ' found';
-      if (!s.running) { done++; if (done === 2) { clearInterval(iv); location.reload(); } }
-    }).catch(() => {});
-    fetch('/api/linkcheck-status').then(r => r.json()).then(s => {
-      var el = document.getElementById('lc-counts');
-      if (el && s.running) el.textContent = s.processed + '/' + s.total + ', ' + s.dead + ' dead';
-      if (!s.running) { done++; if (done === 2) { clearInterval(iv); location.reload(); } }
-    }).catch(() => {});
+    var jobs = [
+      ['/api/enrich-status', 'enrich-counts',
+       s => s.processed + '/' + s.total + ', ' + s.found + ' found'],
+      ['/api/linkcheck-status', 'lc-counts',
+       s => s.processed + '/' + s.total + ', ' + s.dead + ' dead'],
+      ['/api/filescan-status', 'fs-counts',
+       s => s.processed + '/' + s.total + ', ' + s.matched + ' matched']
+    ];
+    var waiting = jobs.length, anyRunning = false, anyBox = false;
+    jobs.forEach(function (job) {
+      fetch(job[0]).then(r => r.json()).then(s => {
+        var el = document.getElementById(job[1]);
+        if (el) { anyBox = true; el.textContent = job[2](s); if (s.running) anyRunning = true; }
+      }).catch(() => {}).finally(() => {
+        if (--waiting === 0 && anyBox && !anyRunning) { clearInterval(iv); location.reload(); }
+      });
+    });
   }, 5000);
 })();
 </script>"""
@@ -554,7 +572,10 @@ def media_page(links, q="", author="", subreddit="", creator="", fav=0,
   <form method="post" action="/media/check-links">
     <button type="submit" class="btn"{" disabled" if lc_state.get("running") else ""}>🩺 Check dead links</button>
   </form>
-  <span class="dim">Refresh pulls thumbnails, scores and durations from your saved posts. Dead-link check verifies every URL (redgifs via their API, rest via HEAD) — runs in the background.</span>
+  <form method="post" action="/media/scan-files">
+    <button type="submit" class="btn"{" disabled" if fs_state.get("running") else ""}>📁 Scan local files</button>
+  </form>
+  <span class="dim">Refresh pulls thumbnails, scores and durations from your saved posts. Dead-link check verifies every URL. Scan local files matches your JDownloader downloads so videos play from disk — no regional blocks. All run in the background.</span>
 </div>
 {tools}
 <p class="dim">{len(links)} video{'s' if len(links) != 1 else ''}</p>
@@ -568,6 +589,7 @@ def media_page(links, q="", author="", subreddit="", creator="", fav=0,
     <div class="lb-meta">
       <h3 id="lb-title"></h3>
       <p id="lb-sub" class="dim"></p>
+      <p id="lb-note" class="dim"></p>
       <div class="lb-actions">
         <button class="btn" onclick="lbNav(-1)">◀</button>
         <button class="btn" onclick="lbNav(1)">▶</button>
