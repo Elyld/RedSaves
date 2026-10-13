@@ -350,8 +350,27 @@ def test_enrich_tries_url_variants(fresh_db, monkeypatch, config, token_ok):
 def test_url_variants_dedupes_and_caps():
     v = scanner._url_variants("https://www.example.com/a.gif")
     assert v[0] == "https://www.example.com/a.gif"
-    assert len(v) <= 4
+    assert len(v) <= 5
     assert len(set(v)) == len(v)
     v2 = scanner._url_variants("http://example.com/b.mp4")
     assert "https://example.com/b.mp4" in v2
     assert "https://www.example.com/b.mp4" in v2
+
+
+def test_canonicalize_vredd_it_strips_media_path():
+    assert (scanner._canonicalize_url("https://v.redd.it/wlfxk26lsvah1/CMAF_1080.mp4")
+            == "https://v.redd.it/wlfxk26lsvah1")
+    v = scanner._url_variants("https://v.redd.it/wlfxk26lsvah1/CMAF_1080.mp4")
+    assert v[0] == "https://v.redd.it/wlfxk26lsvah1"
+
+
+def test_canonicalize_redgifs_forms():
+    assert (scanner._canonicalize_url("https://v3.redgifs.com/watch/AbcXyz")
+            == "https://www.redgifs.com/watch/AbcXyz")
+    assert (scanner._canonicalize_url("https://Www.redgifs.com/watch/AbcXyz")
+            == "https://www.redgifs.com/watch/AbcXyz")
+    assert (scanner._canonicalize_url("https://www.redgifs.com/ifr/AbcXyz")
+            == "https://www.redgifs.com/watch/AbcXyz")
+    # already-canonical stays first
+    v = scanner._url_variants("https://www.redgifs.com/watch/AbcXyz")
+    assert v[0] == "https://www.redgifs.com/watch/AbcXyz"

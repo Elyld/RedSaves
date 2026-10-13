@@ -29,6 +29,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import requests
 from dotenv import load_dotenv
@@ -122,18 +123,51 @@ def get_enrich_progress() -> dict:
     return dict(_enrich_progress)
 
 
+def _canonicalize_url(url):
+    """Normalize a saved media URL to the post form Reddit likely indexed.
+
+    Only used for the /api/info lookup — the stored URL is never rewritten.
+    """
+    try:
+        p = urlsplit(url)
+        host = (p.hostname or "").lower()
+        path = p.path or ""
+        if host == "v.redd.it":
+            # v.redd.it/{id}/CMAF_1080.mp4 -> v.redd.it/{id}
+            segs = [s for s in path.split("/") if s]
+            if segs:
+                return f"https://v.redd.it/{segs[0]}"
+            return url
+        if host in ("redgifs.com", "www.redgifs.com", "v3.redgifs.com"):
+            # v3.redgifs.com -> www.redgifs.com; /ifr/{slug} -> /watch/{slug}
+            segs = [s for s in path.split("/") if s]
+            if len(segs) >= 2 and segs[0] == "ifr":
+                path = "/watch/" + "/".join(segs[1:])
+            return f"https://www.redgifs.com{path}"
+        # default: lowercase host, drop query/fragment
+        return f"{p.scheme.lower()}://{host}{path}"
+    except Exception:
+        return url
+
+
 def _url_variants(url):
-    """The URL plus cheap normalized variants for /api/info lookup.
+    """The canonical post form of the URL plus cheap normalized variants
+    for /api/info lookup.
 
     Reddit indexes the submission URL as-submitted; a saved file often holds
-    a slightly different form (www vs bare host, http vs https). Try the
-    original first, then up to 3 variants.
+    a slightly different form (www vs bare host, http vs https, media-file
+    path on v.redd.it, v3/ifr redgifs forms). Try the canonical form first,
+    then the raw URL and scheme/www toggles.
     """
-    cands = [url]
-    if url.startswith("https://"):
-        cands.append("http://" + url[len("https://"):])
-    elif url.startswith("http://"):
-        cands.append("https://" + url[len("http://"):])
+    cands = []
+    canonical = _canonicalize_url(url)
+    cands.append(canonical)
+    if url != canonical:
+        cands.append(url)
+    if canonical.startswith("https://"):
+        cands.append("http://" + canonical[len("https://"):])
+    elif canonical.startswith("http://"):
+        cands.append("https://" + canonical[len("http://"):])
     out = list(cands)
     for v in cands:
         m = re.match(r"(https?://)(www\.)?(.*)", v)
@@ -148,7 +182,7 @@ def _url_variants(url):
         if v not in seen:
             seen.add(v)
             uniq.append(v)
-    return uniq[:4]
+    return uniq[:5]
 
 
 def fetch_info_by_url(config: ScanConfig, token, url):
