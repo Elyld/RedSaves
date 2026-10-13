@@ -61,8 +61,8 @@ query FindScene($id: ID!) {
 }"""
 
 FIND_SCENES = """
-query FindScenes($page: Int!) {
-  findScenes(filter: {page: $page, per_page: 100}) {
+query FindScenes($page: Int!, $scene_filter: SceneFilterType) {
+  findScenes(filter: {page: $page, per_page: 100}, scene_filter: $scene_filter) {
     count scenes { id files { path } tags { name } }
   }
 }"""
@@ -157,6 +157,14 @@ def redsaves_lookup(base_url, filename):
 
 # --- core --------------------------------------------------------------------------
 
+def path_in_prefix(path, prefix):
+    """True if path is the prefix dir itself or inside it."""
+    prefix = (prefix or "").rstrip("/")
+    if not prefix:
+        return True
+    return path == prefix or path.startswith(prefix + "/")
+
+
 def parse_input(raw):
     """('hook', hookContext) | ('task', args) | (None, None)."""
     if not isinstance(raw, dict):
@@ -184,7 +192,7 @@ def build_scene_update(scene_id, meta, performer_ids, tag_ids):
     return {"input": inp}
 
 
-def process_scene(scene_id, base_url, dry_run=False):
+def process_scene(scene_id, base_url, path_prefix="", dry_run=False):
     data = gql(FIND_SCENE, {"id": scene_id})
     scene = (data or {}).get("findScene")
     if not scene:
@@ -196,6 +204,8 @@ def process_scene(scene_id, base_url, dry_run=False):
     if not files:
         return False
     path = files[0].get("path") or ""
+    if not path_in_prefix(path, path_prefix):
+        return False  # outside the configured directory
     filename = path.replace("\\", "/").rsplit("/", 1)[-1]
     meta = redsaves_lookup(base_url, filename)
     if not meta:
@@ -227,10 +237,14 @@ def process_scene(scene_id, base_url, dry_run=False):
     return ok
 
 
-def backfill(base_url, dry_run=False):
+def backfill(base_url, path_prefix="", dry_run=False):
     page, updated, total = 1, 0, None
+    scene_filter = None
+    if (path_prefix or "").strip():
+        scene_filter = {"path": {"value": path_prefix.rstrip("/"),
+                                 "modifier": "INCLUDES"}}
     while True:
-        data = gql(FIND_SCENES, {"page": page})
+        data = gql(FIND_SCENES, {"page": page, "scene_filter": scene_filter})
         block = (data or {}).get("findScenes") or {}
         scenes = block.get("scenes") or []
         total = block.get("count") or 0
@@ -238,7 +252,7 @@ def backfill(base_url, dry_run=False):
             tag_names = {t["name"] for t in scene.get("tags") or []}
             if MARKER_TAG in tag_names:
                 continue
-            if process_scene(scene["id"], base_url, dry_run):
+            if process_scene(scene["id"], base_url, path_prefix, dry_run):
                 updated += 1
         if page * 100 >= total or not scenes:
             break
@@ -257,6 +271,7 @@ def main():
     settings = plugin_settings()
     _api_key = settings.get("api_key") or ""
     base_url = (settings.get("redsaves_url") or "").rstrip("/")
+    path_prefix = (settings.get("path_prefix") or "").strip()
     dry_run = bool(settings.get("dry_run"))
     if not base_url:
         log("Set 'RedSaves URL' in the plugin settings "
@@ -266,9 +281,9 @@ def main():
     if kind == "hook":
         scene_id = payload.get("id")
         if scene_id:
-            process_scene(str(scene_id), base_url, dry_run)
+            process_scene(str(scene_id), base_url, path_prefix, dry_run)
     elif kind == "task" and payload.get("mode") == "backfill":
-        backfill(base_url, dry_run)
+        backfill(base_url, path_prefix, dry_run)
     else:
         log(f"ignoring input: {json.dumps(raw)[:120]}")
 

@@ -54,3 +54,12 @@ def test_manifest_exists_and_names_plugin():
     assert "Scene.Create.Post" in text
     assert "redsaves_url" in text
     assert "Backfill from RedSaves" in text
+
+
+def test_path_in_prefix():
+    assert redsaves.path_in_prefix("/data/reddit/clip.mp4", "/data/reddit")
+    assert redsaves.path_in_prefix("/data/reddit/sub/clip.mp4", "/data/reddit/")
+    assert not redsaves.path_in_prefix("/data/other/clip.mp4", "/data/reddit")
+    assert not redsaves.path_in_prefix("/data/reddit2/clip.mp4", "/data/reddit")
+    assert redsaves.path_in_prefix("/data/reddit/clip.mp4", "")
+    assert redsaves.path_in_prefix("/data/reddit/clip.mp4", None)
