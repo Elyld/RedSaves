@@ -165,18 +165,20 @@ def test_enrich_never_overwrites_existing_fields(fresh_db, monkeypatch, config, 
         session.close()
 
 
-def test_enrich_throttles_once_per_request(fresh_db, monkeypatch, config, token_ok):
+def test_enrich_throttles_every_request(fresh_db, monkeypatch, config, token_ok):
     session = db.get_session()
     _add_link(session, "https://i.imgur.com/e1.gif")
     _add_link(session, "https://i.imgur.com/e2.gif")
     _add_link(session, "https://i.imgur.com/e3.gif", title="skip me")
     session.close()
-    _fake_info(monkeypatch, {})
+    requested = _fake_info(monkeypatch, {})
     calls = _no_throttle(monkeypatch)
 
     scanner.run_enrich(config)
 
-    assert len(calls) == 2  # one throttle per /api/info request
+    # one throttle per actual /api/info request (variants included), so we
+    # stay under Reddit's rate limit even when every variant is tried
+    assert len(calls) == len(requested) > 2
 
 
 def test_enrich_progress_counts(fresh_db, monkeypatch, config, token_ok):
