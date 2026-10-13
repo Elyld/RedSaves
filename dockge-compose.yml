@@ -1,0 +1,31 @@
+# ── RedSaves for Dockge ──────────────────────────────────────────────
+# Copy this whole file into a new Dockge stack, then fill in the
+# Environment section below (same variable names as the old .env file).
+# Updating later is just: pull the new image + redeploy.
+services:
+  redsaves:
+    image: ghcr.io/elyld/redsaves:latest
+    container_name: redsaves
+    ports:
+      - "4003:8000"
+    environment:
+      - TZ=America/Chicago
+      # --- Reddit API ---
+      - CLIENT_ID=
+      - SECRET_TOKEN=
+      - REFRESH_TOKEN=
+      - REDDIT_USERNAME=
+      # --- MyJDownloader ---
+      - EMAIL=
+      - PASSWORD=
+      - DEVICE_NAME=
+      - DESTINATION_FOLDER=
+      # --- Pushover ---
+      - PUSHOVER_USER_KEY=
+      - PUSHOVER_API_TOKEN=
+    volumes:
+      - redsaves-data:/data
+    restart: unless-stopped
+
+volumes:
+  redsaves-data:

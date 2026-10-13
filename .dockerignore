@@ -1,0 +1,18 @@
+# Keep secrets, history, and local state out of the image
+.env
+.env.*
+sent_links.txt
+*.db
+*.log
+*.log.1
+auth_failures.txt
+.venv/
+__pycache__/
+*.pyc
+.git/
+.gitignore
+tests/
+.pytest_cache/
+docker-compose.yml
+dockge-compose.yml
+README.md

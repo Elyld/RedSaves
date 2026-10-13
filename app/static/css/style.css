@@ -1,0 +1,109 @@
+/* RedSaves WebUI — "after hours club" theme.
+   Dark gunmetal surfaces (#1a1d21 / #22262b), hot neon pink (#ff2d78)
+   reserved for key accents: primary buttons, active states, focus. */
+
+:root {
+  --bg: #1a1d21;
+  --panel: #22262b;
+  --panel-2: #262b31;
+  --line: #31373f;
+  --text: #ece9e2;
+  --dim: #8f99a5;
+  --accent: #ff2d78;
+  --accent-soft: #ff7aa8;
+  --accent-glow: rgba(255, 45, 120, 0.35);
+  --warn: #e0a458;
+  --bad: #e0655a;
+  --ok: #7fb069;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--bg); color: var(--text);
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  line-height: 1.45;
+}
+.topbar {
+  display: flex; align-items: center; gap: 1.5rem;
+  padding: 0.8rem 1.2rem; background: var(--panel);
+  border-bottom: 1px solid var(--line); flex-wrap: wrap;
+}
+.brand { font-weight: 700; font-size: 1.15rem; letter-spacing: 0.02em; }
+.topbar nav { display: flex; gap: 0.4rem; flex-wrap: wrap; }
+.topbar nav a {
+  color: var(--dim); text-decoration: none; padding: 0.35rem 0.7rem;
+  border-radius: 6px; transition: color .15s, background .15s, box-shadow .15s;
+}
+.topbar nav a:hover { color: var(--text); background: var(--panel-2); }
+.topbar nav a.active {
+  color: var(--accent-soft); background: var(--panel-2); font-weight: 600;
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+main { max-width: 1000px; margin: 0 auto; padding: 1.2rem; }
+h1 { margin-top: 0.2rem; }
+h2 { margin-top: 1.8rem; border-bottom: 1px solid var(--line); padding-bottom: 0.3rem; }
+.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 0.8rem; }
+.card {
+  background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+  padding: 0.9rem 1rem;
+}
+.card .k { color: var(--dim); font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.04em; }
+.card .v { font-size: 1.5rem; font-weight: 700; margin-top: 0.2rem; }
+.card .v.small { font-size: 1rem; font-weight: 500; }
+.dim { color: var(--dim); }
+.mono { font-family: ui-monospace, monospace; font-size: 0.82em; word-break: break-all; }
+.nowrap { white-space: nowrap; }
+.warn { color: var(--warn); }
+.okline { color: var(--accent-soft); }
+.badge {
+  display: inline-block; padding: 0.15rem 0.55rem; border-radius: 999px;
+  font-size: 0.78rem; font-weight: 600; background: var(--panel-2); color: var(--text);
+  border: 1px solid var(--line);
+}
+.badge-ok { background: rgba(127, 176, 105, 0.14); color: #a9d39a; border-color: rgba(127, 176, 105, 0.35); }
+.badge-idle { background: var(--panel-2); color: var(--dim); }
+.badge-warn { background: rgba(224, 164, 88, 0.14); color: #f0c987; border-color: rgba(224, 164, 88, 0.35); }
+.badge-bad { background: rgba(224, 101, 90, 0.14); color: #f0a49c; border-color: rgba(224, 101, 90, 0.35); }
+.badge-run {
+  background: rgba(255, 45, 120, 0.12); color: var(--accent-soft);
+  border-color: rgba(255, 45, 120, 0.4);
+}
+.tbl { width: 100%; border-collapse: collapse; margin-top: 1rem; }
+.tbl th, .tbl td { text-align: left; padding: 0.55rem 0.6rem; border-bottom: 1px solid var(--line); vertical-align: top; }
+.tbl th { color: var(--dim); font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.04em; }
+.tbl a { color: var(--accent-soft); }
+.tbl a:hover { color: var(--accent); }
+.scanbox { margin-top: 1.5rem; display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; }
+.bigbtn {
+  background: var(--accent); color: #1a1d21; border: none; border-radius: 10px;
+  padding: 0.8rem 1.6rem; font-size: 1.05rem; font-weight: 700; cursor: pointer;
+  box-shadow: 0 0 18px var(--accent-glow);
+  transition: filter .15s, box-shadow .15s;
+}
+.bigbtn:hover { filter: brightness(1.1); box-shadow: 0 0 26px var(--accent-glow); }
+.bigbtn:disabled { filter: grayscale(0.4) brightness(0.8); box-shadow: none; cursor: default; }
+.searchbar { display: flex; gap: 0.5rem; margin: 1rem 0; }
+.searchbar input[type="search"],
+.form input[type="time"] {
+  padding: 0.55rem 0.8rem; border-radius: 8px;
+  border: 1px solid var(--line); background: var(--panel); color: var(--text);
+}
+.searchbar input[type="search"] { flex: 1; }
+.searchbar input[type="search"]:focus,
+.form input[type="time"]:focus {
+  outline: none; border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-glow);
+}
+.searchbar button {
+  padding: 0.55rem 1rem; border-radius: 8px; border: 1px solid var(--line);
+  background: var(--panel-2); color: var(--text); cursor: pointer;
+}
+.searchbar button:hover { border-color: var(--accent); color: var(--accent-soft); }
+.pager { margin-top: 1rem; }
+.pager a { color: var(--accent-soft); margin: 0 0.3rem; }
+.form { max-width: 560px; }
+.form label { display: block; margin: 0.7rem 0; }
+.form label.check { display: flex; gap: 0.6rem; align-items: flex-start; }
+.form input[type="time"] { margin-left: 0.5rem; color-scheme: dark; }
+.form input[type="checkbox"] {
+  width: 1.1rem; height: 1.1rem; margin-top: 0.15rem; accent-color: var(--accent);
+}

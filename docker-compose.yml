@@ -1,0 +1,18 @@
+# Development / local example. For Dockge, use dockge-compose.yml instead.
+services:
+  redsaves:
+    build: .
+    image: redsaves:local
+    container_name: redsaves
+    ports:
+      - "4003:8000"
+    env_file:
+      - .env
+    environment:
+      - TZ=America/Chicago
+    volumes:
+      - redsaves-data:/data
+    restart: unless-stopped
+
+volumes:
+  redsaves-data:
