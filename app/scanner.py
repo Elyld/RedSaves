@@ -88,6 +88,11 @@ def _throttle():
     time.sleep(ENRICH_THROTTLE_SECONDS)
 
 
+# Last HTTP status seen from /api/info (None = no request yet). Lets the
+# runner abort phase 1 early when Reddit refuses the endpoint outright.
+_last_info_status = None
+
+
 def get_enrich_note() -> str:
     return get_setting_value(K_ENRICH_NOTE, "")
 
@@ -189,12 +194,14 @@ def fetch_info_by_url(config: ScanConfig, token, url):
     """Look up submissions linking to url via /api/info. Tries the URL plus
     normalized variants; returns a metadata dict from the first hit, or None
     when nothing is found / on error (row left untouched)."""
+    global _last_info_status
     try:
         headers = {'Authorization': f'bearer {token}', 'User-Agent': 'RedSaves v2.4'}
         for attempt in _url_variants(url):
             response = requests.get('https://oauth.reddit.com/api/info',
                                     params={'url': attempt},
                                     headers=headers, timeout=REQUEST_TIMEOUT)
+            _last_info_status = response.status_code
             if response.status_code != 200:
                 log_error(f"/api/info lookup failed for {attempt[:60]}: HTTP {response.status_code}")
                 return None
@@ -210,7 +217,7 @@ def fetch_info_by_url(config: ScanConfig, token, url):
                     'author': (data.get('author') or ''),
                     'created_utc': data.get('created_utc'),
                 }
-            log_info(f"/api/info: no match for {url[:80]} (tried {len(_url_variants(url))} forms)")
+        log_info(f"/api/info: no match for {url[:80]} (tried {len(_url_variants(url))} forms)")
         return None
     except Exception as e:
         log_error(f"/api/info lookup failed for {url[:60]}: {e}")
@@ -351,8 +358,26 @@ def _run_enrich(config: ScanConfig | None) -> None:
         targets = titleless_links()
         _enrich_progress["total"] = len(targets)
         log_info(f"Enrich started: {len(targets)} link(s) missing titles.")
+        info_403s = 0
         for link_id, url in targets:
             meta = fetch_info_by_url(config, token, url)
+            if _last_info_status == 403:
+                # Systematic refusal, not a per-URL miss: stop burning
+                # requests and fall through to the saved-scan phase.
+                info_403s += 1
+                _enrich_progress["skipped"] += 1
+                _enrich_progress["processed"] += 1
+                if info_403s >= 3:
+                    log_error("Enrich phase 1 aborted: Reddit refused /api/info "
+                              "(HTTP 403) — the token likely lacks the needed "
+                              "scope. Continuing with the saved-posts scan, "
+                              "which uses the working /saved endpoint.")
+                    set_enrich_note("Reddit refused the title-lookup requests "
+                                    "(HTTP 403 — probably the Reddit token's scope). "
+                                    "The saved-posts scan below doesn't need it.")
+                    break
+                continue
+            info_403s = 0
             if meta:
                 apply_enrichment(link_id, meta)
                 _enrich_progress["found"] += 1
