@@ -314,6 +314,11 @@ def apply_enrichment(link_id: int, meta: dict) -> None:
             row.duration = meta['duration']
         if not row.domain and meta.get('domain'):
             row.domain = meta['domain']
+        if not row.flair and meta.get('flair'):
+            row.flair = meta['flair']
+        ratio = _as_float(meta.get('upvote_ratio'))
+        if ratio is not None:
+            row.upvote_ratio = ratio
         # score/comments are volatile: always take the fresh reading
         row.score = meta.get('score') or 0
         row.num_comments = meta.get('num_comments') or 0
@@ -325,6 +330,14 @@ def apply_enrichment(link_id: int, meta: dict) -> None:
         session.commit()
     finally:
         session.close()
+
+
+def _as_float(value):
+    """float(value) or None — Reddit sometimes sends odd values."""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def refresh_metadata(link_id: int, meta: dict) -> None:
@@ -350,6 +363,11 @@ def refresh_metadata(link_id: int, meta: dict) -> None:
             row.post_permalink = meta['post_permalink']
         row.score = meta.get('score') or 0
         row.num_comments = meta.get('num_comments') or 0
+        if not row.flair and meta.get('flair'):
+            row.flair = meta['flair']
+        ratio = _as_float(meta.get('upvote_ratio'))
+        if ratio is not None:
+            row.upvote_ratio = ratio
         session.commit()
     finally:
         session.close()
@@ -430,6 +448,8 @@ def _run_deep_match(config: ScanConfig, token, refresh: bool = False) -> int:
             'thumbnail': _post_thumbnail(post),
             'duration': _post_duration(post),
             'domain': (post.get('domain') or ''),
+            'flair': (post.get('link_flair_text') or ''),
+            'upvote_ratio': post.get('upvote_ratio'),
         }
         if refresh:
             refresh_metadata(link_id, meta)
@@ -1041,6 +1061,8 @@ def extract_media_links(payload, origin="saved"):
                     'duration': _post_duration(data),
                     'domain': (data.get('domain') or ''),
                     'created_utc': data.get('created_utc'),
+                    'flair': (data.get('link_flair_text') or ''),
+                    'upvote_ratio': data.get('upvote_ratio'),
                 })
     except Exception as e:
         log_error(f"Error extracting media links: {e}")
@@ -1110,6 +1132,11 @@ def mark_links(items, status: str, run_id: int | None) -> None:
                     row.duration = item['duration']
                 if item.get('domain'):
                     row.domain = item['domain']
+                if not row.flair and item.get('flair'):
+                    row.flair = item['flair']
+                ratio = _as_float(item.get('upvote_ratio'))
+                if ratio is not None:
+                    row.upvote_ratio = ratio
             else:
                 session.add(Link(
                     url=item['url'],
@@ -1127,6 +1154,8 @@ def mark_links(items, status: str, run_id: int | None) -> None:
                     thumbnail=item.get('thumbnail') or '',
                     duration=item.get('duration'),
                     domain=item.get('domain') or '',
+                    flair=item.get('flair') or '',
+                    upvote_ratio=_as_float(item.get('upvote_ratio')),
                 ))
         session.commit()
     finally:
@@ -1178,6 +1207,130 @@ def _start_grabbed_packages(device) -> None:
             log_info(f"Moved {len(ids)} package(s) to the JDownloader download list.")
     except Exception as e:
         log_error(f"Could not auto-start JDownloader downloads: {e}")
+
+
+# --- JDownloader status sync ----------------------------------------------------
+
+_jdsync_lock = threading.Lock()
+_jdsync_progress = {"running": False, "processed": 0, "total": 0,
+                    "done": 0, "failed": 0}
+
+
+def get_jdsync_progress() -> dict:
+    return dict(_jdsync_progress)
+
+
+def _jd_link_state(jd_link: dict) -> str:
+    """Map a myjdapi link dict to done|downloading|queued|failed."""
+    if jd_link.get('finished'):
+        return 'done'
+    status = str(jd_link.get('status') or '').lower()
+    if any(w in status for w in ('fail', 'error', 'offline', 'dead',
+                                 'missing', 'skipped')):
+        return 'failed'
+    if (jd_link.get('bytesLoaded') or 0) > 0:
+        return 'downloading'
+    return 'queued'
+
+
+def _jd_state_map(device) -> dict:
+    """url -> state for every link JDownloader knows about (download list +
+    linkgrabber). Collisions keep the most attention-worthy state."""
+    rank = {'failed': 3, 'downloading': 2, 'queued': 1, 'done': 0}
+    out = {}
+    try:
+        dl_links = device.downloads.query_links() or []
+    except Exception as e:
+        log_error(f"JD sync: downloads query failed: {e}")
+        dl_links = []
+    try:
+        grab_links = device.linkgrabber.query_links() or []
+    except Exception as e:
+        log_error(f"JD sync: linkgrabber query failed: {e}")
+        grab_links = []
+    for jd_link in dl_links + grab_links:
+        url = jd_link.get('url') or ''
+        if not url:
+            continue
+        state = _jd_link_state(jd_link)
+        if rank.get(state, 0) >= rank.get(out.get(url), -1):
+            out[url] = state
+    return out
+
+
+def run_jd_sync() -> bool:
+    """Match every stored link against JDownloader's lists, in the background.
+    Returns False when one is already running."""
+    if not _jdsync_lock.acquire(blocking=False):
+        log_info("JD sync skipped: another sync is already running.")
+        return False
+    try:
+        _run_jd_sync()
+    finally:
+        _jdsync_lock.release()
+    return True
+
+
+def _run_jd_sync() -> None:
+    global _jdsync_progress
+    _jdsync_progress = {"running": True, "processed": 0, "total": 0,
+                        "done": 0, "failed": 0}
+    config = ScanConfig.from_env()
+    if config is None:
+        log_error("JD sync: JDownloader credentials missing.")
+        _jdsync_progress["running"] = False
+        return
+    try:
+        api = Myjdapi()
+        api.connect(config.email, config.password)
+        device = api.get_device(config.device_name)
+    except Exception as e:
+        log_error(f"JD sync: could not reach JDownloader: {e}")
+        _jdsync_progress["running"] = False
+        return
+    if not device:
+        log_error("JD sync: JDownloader device not found.")
+        _jdsync_progress["running"] = False
+        return
+    jd_urls = _jd_state_map(device)
+    links = _all_links()
+    _jdsync_progress["total"] = len(links)
+    # Key fallback: JD often stores the resolved direct URL while we stored
+    # the watch page (or vice versa) — match on redgifs slug / v.redd.it id /
+    # filename stem when the exact URL isn't there.
+    key_map = {}
+    for url, state in jd_urls.items():
+        for k in media_keys(url):
+            key_map.setdefault(k, state)
+    session = get_session()
+    try:
+        try:
+            for link_id, url in links:
+                state = jd_urls.get(url)
+                if state is None:
+                    for k in media_keys(url):
+                        state = key_map.get(k)
+                        if state:
+                            break
+                row = session.query(Link).filter(Link.id == link_id).first()
+                if row is not None and state:
+                    row.jd_status = state
+                    if state == 'done':
+                        _jdsync_progress["done"] += 1
+                    elif state == 'failed':
+                        _jdsync_progress["failed"] += 1
+                _jdsync_progress["processed"] += 1
+                session.commit()
+        finally:
+            session.close()
+    finally:
+        _jdsync_progress["running"] = False
+    log_info(f"JD sync finished: {_jdsync_progress['done']} done, "
+             f"{_jdsync_progress['failed']} failed of {len(links)} link(s).")
+    try:
+        api.disconnect()
+    except Exception:
+        pass
 
 
 # --- Pushover -----------------------------------------------------------------

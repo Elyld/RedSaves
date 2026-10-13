@@ -8,6 +8,11 @@ gives it a real history database, a dashboard, and its own scheduler.
 
 ## Changelog
 
+- **v2.13.0** — Post flair + upvote ratio (free in the Reddit payload — flair
+  badges on cards, "97% upvoted" in the player); **🔄 Sync JD status** button
+  (matches every link against JDownloader's download list + linkgrabber in the
+  background, exact-URL plus slug/id fallback matching — ⬇ downloading /
+  ⏳ queued / ✗ JD failed badges).
 - **v2.12.0** — Pictures are first-class media (`.jpg`/`.png`/`.webp`/`.jpeg`
   now collected, viewable, and matched to local downloads — previously only
   `.gif`/`.mp4`/redgifs/v.redd.it were picked up); **🧹 Dupes** detector

@@ -588,6 +588,9 @@ function renderLb() {
   if (it.score) bits.push('▲ ' + it.score);
   if (it.views) bits.push('👁 ' + fmtNum(it.views));
   if (it.likes) bits.push('♥ ' + fmtNum(it.likes));
+  if (it.ratio) bits.push(Math.round(it.ratio * 100) + '% upvoted');
+  if (it.flair) bits.push('🏷️ ' + it.flair);
+  if (it.jd && it.jd !== 'done') bits.push('JD: ' + it.jd);
   if (it.duration) bits.push(fmtDur(it.duration));
   document.getElementById('lb-sub').textContent = bits.join(' · ');
   document.getElementById('lb-tags').textContent = it.tags ? '#' + it.tags.split(', ').slice(0, 8).join(' #') : '';
@@ -680,7 +683,7 @@ fillPlaylistSelect();
 
 def media_page(links, q="", author="", subreddit="", creator="", fav=0,
                hide_dead=0, sort="new", authors=(), subs=(), creators=(),
-               enrich=None, linkcheck=None, filescan=None,
+               enrich=None, linkcheck=None, filescan=None, jdsync=None,
                playlists=(), dupe_count=0, dead_count=0) -> str:
     """Media center: filterable video grid + lightbox player."""
     cards = []
@@ -713,6 +716,15 @@ def media_page(links, q="", author="", subreddit="", creator="", fav=0,
             badges.append(f'<span class="mbadge">{m}:{s:02d}</span>')
         if link.score:
             badges.append(f'<span class="mbadge">▲ {link.score}</span>')
+        if link.flair:
+            badges.append(f'<span class="mbadge flair">🏷️ {esc(link.flair)}</span>')
+        jd = link.jd_status or ""
+        if jd == "downloading":
+            badges.append('<span class="mbadge jd">⬇ downloading</span>')
+        elif jd == "queued":
+            badges.append('<span class="mbadge jd">⏳ queued</span>')
+        elif jd == "failed":
+            badges.append('<span class="mbadge dead">✗ JD failed</span>')
         if not link.alive:
             badges.append('<span class="mbadge dead">💀 dead</span>')
         meta_bits = [b for b in (link.author, link.creator, link.subreddit) if b]
@@ -720,7 +732,7 @@ def media_page(links, q="", author="", subreddit="", creator="", fav=0,
 <article class="mcard{' isdead' if not link.alive else ''}" data-idx="{n}" data-kind="{kind}" data-url="{esc(link.url)}">
   <div class="mprev">{thumb}{preview}
     <button class="{star_cls}" data-id="{link.id}" title="Toggle favorite">{star}</button>
-    {''.join(badges)}
+    <div class="mbadges">{''.join(badges)}</div>
   </div>
   <div class="mmeta">
     <p class="mtitle">{esc(short_title)}</p>
@@ -733,7 +745,9 @@ def media_page(links, q="", author="", subreddit="", creator="", fav=0,
                          "fav": bool(link.favorite), "score": link.score or 0,
                          "duration": link.duration or 0, "local": local,
                          "views": link.views or 0, "likes": link.likes or 0,
-                         "tags": link.tags or ""})
+                         "tags": link.tags or "", "flair": link.flair or "",
+                         "ratio": link.upvote_ratio or 0,
+                         "jd": link.jd_status or ""})
 
     def opts(pairs, current, label):
         out = [f'<option value="">{label}</option>']
@@ -745,7 +759,13 @@ def media_page(links, q="", author="", subreddit="", creator="", fav=0,
     enrich_state = enrich or {}
     lc_state = linkcheck or {}
     fs_state = filescan or {}
+    jd_state = jdsync or {}
     tools = ""
+    if jd_state.get("running"):
+        tools += (f'<div class="infobox"><p>🔄 Syncing JDownloader status… '
+                  f'<span id="jd-counts">{jd_state.get("processed", 0)}/'
+                  f'{jd_state.get("total", 0)}, {jd_state.get("done", 0)} done, '
+                  f'{jd_state.get("failed", 0)} failed</span></p></div>')
     if enrich_state.get("running"):
         phase = enrich_state.get("phase")
         label = ("🔎 Scanning saved posts… " if phase == "saved-scan"
@@ -772,7 +792,9 @@ def media_page(links, q="", author="", subreddit="", creator="", fav=0,
       ['/api/linkcheck-status', 'lc-counts',
        s => s.processed + '/' + s.total + ', ' + s.dead + ' dead'],
       ['/api/filescan-status', 'fs-counts',
-       s => s.processed + '/' + s.total + ', ' + s.matched + ' matched']
+       s => s.processed + '/' + s.total + ', ' + s.matched + ' matched'],
+      ['/api/jdsync-status', 'jd-counts',
+       s => s.processed + '/' + s.total + ', ' + s.done + ' done, ' + s.failed + ' failed']
     ];
     var waiting = jobs.length, anyRunning = false, anyBox = false;
     jobs.forEach(function (job) {
@@ -812,6 +834,9 @@ def media_page(links, q="", author="", subreddit="", creator="", fav=0,
   </form>
   <form method="post" action="/media/scan-files">
     <button type="submit" class="btn"{" disabled" if fs_state.get("running") else ""}>📁 Scan local files</button>
+  </form>
+  <form method="post" action="/media/sync-jd">
+    <button type="submit" class="btn"{" disabled" if jd_state.get("running") else ""}>🔄 Sync JD status</button>
   </form>
   <a class="btn" href="/dupes">🧹 Dupes{f' ({dupe_count})' if dupe_count else ''}</a>
   <a class="btn" href="/graveyard">🪦 Graveyard{f' ({dead_count})' if dead_count else ''}</a>
