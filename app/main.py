@@ -152,7 +152,8 @@ def top():
 
 @app.get("/media", response_class=HTMLResponse)
 def media(q: str = Query(default=""), author: str = Query(default=""),
-          subreddit: str = Query(default=""), fav: int = Query(default=0),
+          subreddit: str = Query(default=""), creator: str = Query(default=""),
+          fav: int = Query(default=0), hide_dead: int = Query(default=0),
           sort: str = Query(default="new")):
     """Media center: filterable video grid with lightbox player."""
     session = get_session()
@@ -162,24 +163,32 @@ def media(q: str = Query(default=""), author: str = Query(default=""),
             like = f"%{q}%"
             query = query.filter(or_(
                 Link.url.like(like), Link.post_title.like(like),
-                Link.subreddit.like(like), Link.author.like(like)))
+                Link.subreddit.like(like), Link.author.like(like),
+                Link.creator.like(like)))
         if author:
             query = query.filter(Link.author == author)
         if subreddit:
             query = query.filter(Link.subreddit == subreddit)
+        if creator:
+            query = query.filter(Link.creator == creator)
         if fav:
             query = query.filter(Link.favorite.is_(True))
+        if hide_dead:
+            query = query.filter(Link.alive.is_(True))
         query = query.order_by(Link.sent_at if sort == "old" else desc(Link.sent_at))
         links = query.all()
-        authors = (session.query(Link.author, func.count(Link.id))
-                   .filter(Link.author != "").group_by(Link.author)
-                   .order_by(desc(func.count(Link.id))).all())
-        subs = (session.query(Link.subreddit, func.count(Link.id))
-                .filter(Link.subreddit != "").group_by(Link.subreddit)
-                .order_by(desc(func.count(Link.id))).all())
-        return pages.media_page(links, q, author, subreddit, fav, sort,
-                                [(a or "?", c) for a, c in authors],
-                                [(s or "?", c) for s, c in subs])
+
+        def ranked(col):
+            return [(r[0] or "?", r[1]) for r in
+                    session.query(col, func.count(Link.id))
+                    .filter(col != "").group_by(col)
+                    .order_by(desc(func.count(Link.id))).all()]
+
+        return pages.media_page(
+            links, q, author, subreddit, creator, fav, hide_dead, sort,
+            ranked(Link.author), ranked(Link.subreddit), ranked(Link.creator),
+            enrich=scan_mod.get_enrich_progress(),
+            linkcheck=scan_mod.get_linkcheck_progress())
     finally:
         session.close()
 
@@ -196,6 +205,31 @@ def toggle_favorite(link_id: int):
         return JSONResponse({"favorite": link.favorite})
     finally:
         session.close()
+
+
+@app.post("/media/refresh")
+def media_refresh():
+    """Backfill thumbnails/stats for already-titled links via saved-scan."""
+    if scan_mod._enrich_lock.locked():
+        raise HTTPException(status_code=409, detail="already running")
+    thread = threading.Thread(target=scan_mod.run_metadata_refresh, daemon=True)
+    thread.start()
+    return RedirectResponse(url="/media", status_code=303)
+
+
+@app.post("/media/check-links")
+def media_check_links():
+    """Background dead-link check over every stored link."""
+    if scan_mod._linkcheck_lock.locked():
+        raise HTTPException(status_code=409, detail="already running")
+    thread = threading.Thread(target=scan_mod.run_link_check, daemon=True)
+    thread.start()
+    return RedirectResponse(url="/media", status_code=303)
+
+
+@app.get("/api/linkcheck-status")
+def api_linkcheck_status():
+    return scan_mod.get_linkcheck_progress()
 
 
 @app.get("/logs", response_class=HTMLResponse)

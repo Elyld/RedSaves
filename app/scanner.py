@@ -128,6 +128,28 @@ def get_enrich_progress() -> dict:
     return dict(_enrich_progress)
 
 
+def _post_thumbnail(data):
+    """Best thumbnail URL from a Reddit post data dict, or ''. Prefers the
+    high-res preview image; skips Reddit's placeholder strings."""
+    preview = (data.get('preview') or {}).get('images') or []
+    if preview:
+        src = (preview[0].get('source') or {}).get('url') or ''
+        if src:
+            return src.replace('&amp;', '&')
+    thumb = data.get('thumbnail') or ''
+    if thumb in ('', 'self', 'default', 'nsfw', 'spoiler'):
+        return ''
+    return thumb.replace('&amp;', '&')
+
+
+def _post_duration(data):
+    """Video duration in seconds from reddit_video metadata, or None."""
+    try:
+        return int((data.get('media') or {}).get('reddit_video', {}).get('duration'))
+    except (TypeError, ValueError, AttributeError):
+        return None
+
+
 def media_embed(url):
     """How to play a stored URL in the media center. Returns (kind, src):
 
@@ -247,6 +269,11 @@ def fetch_info_by_url(config: ScanConfig, token, url):
                     'subreddit': (data.get('subreddit') or ''),
                     'author': (data.get('author') or ''),
                     'created_utc': data.get('created_utc'),
+                    'score': data.get('score') or 0,
+                    'num_comments': data.get('num_comments') or 0,
+                    'thumbnail': _post_thumbnail(data),
+                    'duration': _post_duration(data),
+                    'domain': (data.get('domain') or ''),
                 }
         log_info(f"/api/info: no match for {url[:80]} (tried {len(_url_variants(url))} forms)")
         return None
@@ -274,11 +301,48 @@ def apply_enrichment(link_id: int, meta: dict) -> None:
             row.subreddit = meta['subreddit']
         if not row.author and meta.get('author'):
             row.author = meta['author']
+        if not row.thumbnail and meta.get('thumbnail'):
+            row.thumbnail = meta['thumbnail']
+        if not row.duration and meta.get('duration'):
+            row.duration = meta['duration']
+        if not row.domain and meta.get('domain'):
+            row.domain = meta['domain']
+        # score/comments are volatile: always take the fresh reading
+        row.score = meta.get('score') or 0
+        row.num_comments = meta.get('num_comments') or 0
         if title_was_empty and meta.get('created_utc'):
             try:
                 row.sent_at = datetime.fromtimestamp(float(meta['created_utc']))
             except (ValueError, TypeError, OSError):
                 pass
+        session.commit()
+    finally:
+        session.close()
+
+
+def refresh_metadata(link_id: int, meta: dict) -> None:
+    """Backfill pass for links that already have titles: refresh volatile
+    stats and fill empty media-data fields. Never touches the title,
+    permalink, or sent_at."""
+    session = get_session()
+    try:
+        row = session.query(Link).filter(Link.id == link_id).first()
+        if not row:
+            return
+        if meta.get('thumbnail'):
+            row.thumbnail = meta['thumbnail']
+        if meta.get('duration'):
+            row.duration = meta['duration']
+        if not row.domain and meta.get('domain'):
+            row.domain = meta['domain']
+        if not row.author and meta.get('author'):
+            row.author = meta['author']
+        if not row.subreddit and meta.get('subreddit'):
+            row.subreddit = meta['subreddit']
+        if not row.post_permalink and meta.get('post_permalink'):
+            row.post_permalink = meta['post_permalink']
+        row.score = meta.get('score') or 0
+        row.num_comments = meta.get('num_comments') or 0
         session.commit()
     finally:
         session.close()
@@ -316,11 +380,23 @@ def _iter_all_saved_posts(config: ScanConfig, token):
     log_info(f"Saved-scan: paged through {pages} saved page(s).")
 
 
-def _run_deep_match(config: ScanConfig, token) -> int:
-    """Phase 2 of enrichment: match still-title-less links against the full
-    saved-posts list by canonical URL. Never adds new links — metadata
-    backfill only. Returns the number matched."""
-    remaining = titleless_links()
+def _all_links() -> list:
+    """(id, url) pairs for every link, oldest first."""
+    session = get_session()
+    try:
+        rows = (session.query(Link.id, Link.url)
+                .order_by(Link.id).all())
+        return [(r.id, r.url) for r in rows]
+    finally:
+        session.close()
+
+
+def _run_deep_match(config: ScanConfig, token, refresh: bool = False) -> int:
+    """Phase 2 of enrichment: match links against the full saved-posts list
+    by canonical URL. Default mode only touches still-title-less links;
+    refresh=True updates media-data (thumbnail/score/…) on every matched
+    link without touching titles. Never adds new links. Returns matches."""
+    remaining = _all_links() if refresh else titleless_links()
     want = {}
     for link_id, url in remaining:
         want.setdefault(_canonicalize_url(url), link_id)
@@ -333,25 +409,190 @@ def _run_deep_match(config: ScanConfig, token) -> int:
         url = post.get('url', '') or ''
         if not any(ext in url for ext in MEDIA_MARKERS):
             continue
-        link_id = want.pop(_canonicalize_url(url), None)
+        link_id = want.get(_canonicalize_url(url))
         if link_id is None:
             continue
-        apply_enrichment(link_id, {
+        meta = {
             'post_title': post.get('title', ''),
             'post_permalink': post.get('permalink', ''),
             'subreddit': (post.get('subreddit') or ''),
             'author': (post.get('author') or ''),
             'created_utc': post.get('created_utc'),
-        })
+            'score': post.get('score') or 0,
+            'num_comments': post.get('num_comments') or 0,
+            'thumbnail': _post_thumbnail(post),
+            'duration': _post_duration(post),
+            'domain': (post.get('domain') or ''),
+        }
+        if refresh:
+            refresh_metadata(link_id, meta)
+        else:
+            apply_enrichment(link_id, meta)
+            want.pop(_canonicalize_url(url), None)
         matched += 1
         _enrich_progress['found'] += 1
         _enrich_progress['processed'] += 1
-        if not want:
+        if not refresh and not want:
             break
-    _enrich_progress['skipped'] = len(want)
-    log_info(f"Saved-scan: matched {matched} link(s) from {scanned} saved post(s); "
-             f"{len(want)} still without metadata.")
+    if not refresh:
+        _enrich_progress['skipped'] = len(want)
+    log_info(f"Saved-scan ({'refresh' if refresh else 'enrich'}): matched "
+             f"{matched} link(s) from {scanned} saved post(s).")
     return matched
+
+
+def run_metadata_refresh(config: ScanConfig | None = None) -> bool:
+    """One-shot backfill of thumbnails/stats for already-titled links, via the
+    saved-posts scan. Returns False when another enrich/refresh is running."""
+    if not _enrich_lock.acquire(blocking=False):
+        log_info("Metadata refresh skipped: another enrichment is already running.")
+        return False
+    try:
+        _run_metadata_refresh(config or ScanConfig.from_env())
+    finally:
+        _enrich_lock.release()
+    return True
+
+
+def _run_metadata_refresh(config: ScanConfig | None) -> None:
+    global _enrich_progress
+    _enrich_progress = {"running": True, "phase": "refresh", "processed": 0,
+                        "total": 0, "found": 0, "skipped": 0}
+    try:
+        set_enrich_note("")
+        if config is None:
+            set_enrich_note("Metadata refresh couldn't start — Reddit credentials are missing.")
+            return
+        token = get_access_token(config)
+        if not token:
+            set_enrich_note("Metadata refresh couldn't get a Reddit token — see the Logs page.")
+            return
+        total = len(_all_links())
+        _enrich_progress["total"] = total
+        log_info(f"Metadata refresh started: {total} link(s).")
+        _run_deep_match(config, token, refresh=True)
+        log_info(f"Metadata refresh finished: {_enrich_progress['found']} matched.")
+    finally:
+        _enrich_progress["running"] = False
+
+
+# --- Dead-link checker ---------------------------------------------------------
+
+_linkcheck_lock = threading.Lock()
+_linkcheck_progress = {"running": False, "processed": 0, "total": 0, "dead": 0}
+
+RG_TEMP_AUTH_URL = "https://api.redgifs.com/v2/auth/temporary"
+
+
+def get_linkcheck_progress() -> dict:
+    return dict(_linkcheck_progress)
+
+
+_rg_token = None
+
+
+def _redgifs_token():
+    """Temporary redgifs API token (no user auth needed). Cached in memory."""
+    global _rg_token
+    if _rg_token:
+        return _rg_token
+    try:
+        r = requests.get(RG_TEMP_AUTH_URL, timeout=REQUEST_TIMEOUT)
+        if r.status_code == 200:
+            _rg_token = (r.json() or {}).get('token')
+    except Exception as e:
+        log_error(f"redgifs temp auth failed: {e}")
+    return _rg_token
+
+
+def _redgifs_lookup(slug):
+    """(alive, size, creator) via the redgifs API. alive=None when unknown
+    (API hiccup) — the row is left alone rather than false-flagged."""
+    global _rg_token
+    token = _redgifs_token()
+    if not token:
+        return None, None, None
+    try:
+        r = requests.get(f'https://api.redgifs.com/v2/gifs/{slug}',
+                         headers={'Authorization': f'Bearer {token}'},
+                         timeout=REQUEST_TIMEOUT)
+        if r.status_code == 200:
+            gif = (r.json() or {}).get('gif') or {}
+            return True, None, (gif.get('userName') or '')
+        if r.status_code == 404:
+            return False, None, None
+        if r.status_code == 401:
+            _rg_token = None  # expired; next link re-auths
+    except Exception as e:
+        log_error(f"redgifs lookup failed for {slug[:40]}: {e}")
+    return None, None, None
+
+
+def _check_url_alive(url):
+    """Returns (alive, size, creator); alive=None means 'couldn't tell'."""
+    try:
+        p = urlsplit(url)
+        host = (p.hostname or '').lower()
+        segs = [s for s in (p.path or '').split('/') if s]
+        if (host in ('redgifs.com', 'www.redgifs.com', 'v3.redgifs.com')
+                and len(segs) >= 2 and segs[0] in ('watch', 'ifr')):
+            return _redgifs_lookup(segs[1])
+        r = requests.head(url, timeout=REQUEST_TIMEOUT, allow_redirects=True,
+                          headers={'User-Agent': 'RedSaves v2.4'})
+        if r.status_code == 405:
+            r = requests.get(url, timeout=REQUEST_TIMEOUT, stream=True,
+                             headers={'User-Agent': 'RedSaves v2.4',
+                                      'Range': 'bytes=0-0'})
+        alive = r.status_code < 400
+        size = r.headers.get('Content-Length')
+        return alive, (int(size) if size and size.isdigit() else None), None
+    except Exception:
+        return None, None, None
+
+
+def run_link_check() -> bool:
+    """Background dead-link check over every stored link. Returns False when
+    one is already running."""
+    if not _linkcheck_lock.acquire(blocking=False):
+        log_info("Link check skipped: another check is already running.")
+        return False
+    try:
+        _run_link_check()
+    finally:
+        _linkcheck_lock.release()
+    return True
+
+
+def _run_link_check() -> None:
+    global _linkcheck_progress
+    links = _all_links()
+    _linkcheck_progress = {"running": True, "processed": 0,
+                           "total": len(links), "dead": 0}
+    log_info(f"Link check started: {len(links)} link(s).")
+    session = get_session()
+    try:
+        try:
+            for link_id, url in links:
+                alive, size, creator = _check_url_alive(url)
+                row = session.query(Link).filter(Link.id == link_id).first()
+                if row is not None and alive is not None:
+                    row.alive = alive
+                    row.checked_at = datetime.now()
+                    if size is not None:
+                        row.file_size = size
+                    if creator:
+                        row.creator = creator
+                    if not alive:
+                        _linkcheck_progress["dead"] += 1
+                _linkcheck_progress["processed"] += 1
+                session.commit()
+                time.sleep(1.0)  # polite: ~1 req/s across mixed hosts
+        finally:
+            session.close()
+    finally:
+        _linkcheck_progress["running"] = False
+    log_info(f"Link check finished: {_linkcheck_progress['dead']} dead "
+             f"of {len(links)} checked.")
 
 
 def run_enrich(config: ScanConfig | None = None) -> bool:
@@ -663,6 +904,13 @@ def extract_media_links(payload, origin="saved"):
                     'subreddit': (data.get('subreddit') or ''),
                     'author': (data.get('author') or ''),
                     'source': origin,
+                    # free metadata riding along in the same response
+                    'score': data.get('score') or 0,
+                    'num_comments': data.get('num_comments') or 0,
+                    'thumbnail': _post_thumbnail(data),
+                    'duration': _post_duration(data),
+                    'domain': (data.get('domain') or ''),
+                    'created_utc': data.get('created_utc'),
                 })
     except Exception as e:
         log_error(f"Error extracting media links: {e}")
@@ -723,6 +971,15 @@ def mark_links(items, status: str, run_id: int | None) -> None:
                     row.sent_at = now
                 else:
                     row.found_at = row.found_at or now
+                # refresh volatile metadata on rows we see again
+                row.score = item.get('score') or 0
+                row.num_comments = item.get('num_comments') or 0
+                if item.get('thumbnail'):
+                    row.thumbnail = item['thumbnail']
+                if item.get('duration'):
+                    row.duration = item['duration']
+                if item.get('domain'):
+                    row.domain = item['domain']
             else:
                 session.add(Link(
                     url=item['url'],
@@ -735,6 +992,11 @@ def mark_links(items, status: str, run_id: int | None) -> None:
                     sent_at=now if status == 'sent' else None,
                     status=status,
                     run_id=run_id,
+                    score=item.get('score') or 0,
+                    num_comments=item.get('num_comments') or 0,
+                    thumbnail=item.get('thumbnail') or '',
+                    duration=item.get('duration'),
+                    domain=item.get('domain') or '',
                 ))
         session.commit()
     finally:

@@ -48,6 +48,7 @@ def init_db() -> None:
     _ensure_author_column()
     _ensure_source_column()
     _ensure_favorite_column()
+    _ensure_media_data_columns()
     migrate_legacy_history()
 
 
@@ -79,6 +80,28 @@ def _ensure_favorite_column() -> None:
         with _engine.begin() as conn:
             conn.execute(text("ALTER TABLE links ADD COLUMN favorite BOOLEAN DEFAULT 0"))
         logger.info("added links.favorite column")
+
+
+def _ensure_media_data_columns() -> None:
+    """Add v2.10.0 media-data columns (score, thumbnail, duration, liveness…)
+    to older databases. Same no-Alembic guard pattern."""
+    cols = [c["name"] for c in inspect(_engine).get_columns("links")]
+    specs = [
+        ("score", "INTEGER DEFAULT 0"),
+        ("num_comments", "INTEGER DEFAULT 0"),
+        ("thumbnail", "TEXT DEFAULT ''"),
+        ("duration", "INTEGER"),
+        ("domain", "VARCHAR(64) DEFAULT ''"),
+        ("creator", "VARCHAR(128) DEFAULT ''"),
+        ("alive", "BOOLEAN DEFAULT 1"),
+        ("checked_at", "DATETIME"),
+        ("file_size", "INTEGER"),
+    ]
+    with _engine.begin() as conn:
+        for name, ddl in specs:
+            if name not in cols:
+                conn.execute(text(f"ALTER TABLE links ADD COLUMN {name} {ddl}"))
+                logger.info(f"added links.{name} column")
 
 
 def migrate_legacy_history() -> int:

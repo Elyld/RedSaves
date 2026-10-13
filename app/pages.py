@@ -367,13 +367,22 @@ function renderLb() {
   const it = MEDIA[lbIndex];
   document.getElementById('lb-player').innerHTML = playerHTML(it);
   document.getElementById('lb-title').textContent = it.title;
-  document.getElementById('lb-sub').textContent =
-    [it.author, it.sub].filter(Boolean).join(' · ');
+  const bits = [];
+  if (it.author) bits.push(it.author);
+  if (it.creator && it.creator !== it.author) bits.push('@' + it.creator);
+  if (it.sub) bits.push('r/' + it.sub);
+  if (it.score) bits.push('▲ ' + it.score);
+  if (it.duration) bits.push(fmtDur(it.duration));
+  document.getElementById('lb-sub').textContent = bits.join(' · ');
   document.getElementById('lb-open').href = it.url;
   document.getElementById('lb-fav').textContent = it.fav ? '★' : '☆';
   document.getElementById('lb-fav').classList.toggle('on', !!it.fav);
   const v = document.querySelector('#lb-player video');
   if (v) v.onended = () => lbNav(1);
+}
+function fmtDur(s) {
+  const m = Math.floor(s / 60), r = Math.round(s % 60);
+  return m + ':' + String(r).padStart(2, '0');
 }
 function openLb(i) {
   if (!MEDIA.length) return;
@@ -430,8 +439,9 @@ document.getElementById('mshuffle').addEventListener('click', () => {
 """
 
 
-def media_page(links, q="", author="", subreddit="", fav=0, sort="new",
-               authors=(), subs=()) -> str:
+def media_page(links, q="", author="", subreddit="", creator="", fav=0,
+               hide_dead=0, sort="new", authors=(), subs=(), creators=(),
+               enrich=None, linkcheck=None) -> str:
     """Media center: filterable video grid + lightbox player."""
     cards = []
     js_items = []
@@ -439,6 +449,9 @@ def media_page(links, q="", author="", subreddit="", fav=0, sort="new",
         kind, src = media_embed(link.url)
         title = link.post_title or link.url
         short_title = title if len(title) <= 80 else title[:77] + "..."
+        # real thumbnail on top when we have one; falls away if it 404s
+        thumb = (f'<img class="mthumb" loading="lazy" src="{esc(link.thumbnail)}" '
+                 f'onerror="this.remove()" alt="">' if link.thumbnail else '')
         if kind == "redgifs":
             preview = (f'<iframe loading="lazy" src="{esc(src)}" frameborder="0" '
                        f'scrolling="no" tabindex="-1"></iframe><span class="mplay">▶</span>')
@@ -451,11 +464,20 @@ def media_page(links, q="", author="", subreddit="", fav=0, sort="new",
             preview = '<span class="mplay">↗</span>'
         star = "★" if link.favorite else "☆"
         star_cls = "mstar on" if link.favorite else "mstar"
-        meta_bits = [b for b in (link.author, link.subreddit) if b]
+        badges = []
+        if link.duration:
+            m, s = divmod(int(link.duration), 60)
+            badges.append(f'<span class="mbadge">{m}:{s:02d}</span>')
+        if link.score:
+            badges.append(f'<span class="mbadge">▲ {link.score}</span>')
+        if not link.alive:
+            badges.append('<span class="mbadge dead">💀 dead</span>')
+        meta_bits = [b for b in (link.author, link.creator, link.subreddit) if b]
         cards.append(f"""
-<article class="mcard" data-idx="{n}" data-kind="{kind}" data-url="{esc(link.url)}">
-  <div class="mprev">{preview}
+<article class="mcard{' isdead' if not link.alive else ''}" data-idx="{n}" data-kind="{kind}" data-url="{esc(link.url)}">
+  <div class="mprev">{thumb}{preview}
     <button class="{star_cls}" data-id="{link.id}" title="Toggle favorite">{star}</button>
+    {''.join(badges)}
   </div>
   <div class="mmeta">
     <p class="mtitle">{esc(short_title)}</p>
@@ -464,7 +486,9 @@ def media_page(links, q="", author="", subreddit="", fav=0, sort="new",
 </article>""")
         js_items.append({"id": link.id, "kind": kind, "src": src, "url": link.url,
                          "title": title, "author": link.author or "",
-                         "sub": link.subreddit or "", "fav": bool(link.favorite)})
+                         "creator": link.creator or "", "sub": link.subreddit or "",
+                         "fav": bool(link.favorite), "score": link.score or 0,
+                         "duration": link.duration or 0})
 
     def opts(pairs, current, label):
         out = [f'<option value="">{label}</option>']
@@ -473,20 +497,66 @@ def media_page(links, q="", author="", subreddit="", fav=0, sort="new",
             out.append(f'<option value="{esc(name)}"{sel}>{esc(name)} ({count})</option>')
         return "\n".join(out)
 
+    enrich_state = enrich or {}
+    lc_state = linkcheck or {}
+    tools = ""
+    if enrich_state.get("running"):
+        phase = enrich_state.get("phase")
+        label = ("🔎 Scanning saved posts… " if phase == "saved-scan"
+                 else "↻ Refreshing metadata… " if phase == "refresh"
+                 else "⏳ Looking up on Reddit… ")
+        tools += (f'<div class="infobox"><p>{label}'
+                  f'<span id="enrich-counts">{enrich_state.get("processed", 0)}/'
+                  f'{enrich_state.get("total", 0)}, {enrich_state.get("found", 0)} found</span></p></div>')
+    if lc_state.get("running"):
+        tools += (f'<div class="infobox"><p>🩺 Checking links… '
+                  f'<span id="lc-counts">{lc_state.get("processed", 0)}/'
+                  f'{lc_state.get("total", 0)}, {lc_state.get("dead", 0)} dead</span></p></div>')
+    tools += """
+<script>
+(function () {
+  var iv = setInterval(function () {
+    var done = 0;
+    fetch('/api/enrich-status').then(r => r.json()).then(s => {
+      var el = document.getElementById('enrich-counts');
+      if (el && s.running) el.textContent = s.processed + '/' + s.total + ', ' + s.found + ' found';
+      if (!s.running) { done++; if (done === 2) { clearInterval(iv); location.reload(); } }
+    }).catch(() => {});
+    fetch('/api/linkcheck-status').then(r => r.json()).then(s => {
+      var el = document.getElementById('lc-counts');
+      if (el && s.running) el.textContent = s.processed + '/' + s.total + ', ' + s.dead + ' dead';
+      if (!s.running) { done++; if (done === 2) { clearInterval(iv); location.reload(); } }
+    }).catch(() => {});
+  }, 5000);
+})();
+</script>"""
+
     body = f"""
 <h1>Media</h1>
 <form method="get" action="/media" class="mediabar">
   <input type="search" name="q" value="{esc(q)}" placeholder="Search title, author…">
-  <select name="author">{opts(authors, author, "All profiles")}</select>
+  <select name="author">{opts(authors, author, "All posters")}</select>
+  <select name="creator">{opts(creators, creator, "All creators")}</select>
   <select name="subreddit">{opts(subs, subreddit, "All subreddits")}</select>
   <select name="sort">
     <option value="new"{' selected' if sort != 'old' else ''}>Newest first</option>
     <option value="old"{' selected' if sort == 'old' else ''}>Oldest first</option>
   </select>
   <label class="favcheck"><input type="checkbox" name="fav" value="1"{' checked' if fav else ''}> ★ only</label>
+  <label class="favcheck"><input type="checkbox" name="hide_dead" value="1"{' checked' if hide_dead else ''}> Hide dead</label>
   <button type="submit" class="btn">Filter</button>
   <button type="button" class="btn" id="mshuffle">🔀 Shuffle</button>
 </form>
+<div class="mediatools">
+  <form method="post" action="/media/refresh">
+    <button type="submit" class="btn"{" disabled" if enrich_state.get("running") else ""}>↻ Refresh metadata</button>
+  </form>
+  <form method="post" action="/media/check-links">
+    <button type="submit" class="btn"{" disabled" if lc_state.get("running") else ""}>🩺 Check dead links</button>
+  </form>
+  <span class="dim">Refresh pulls thumbnails, scores and durations from your saved posts. Dead-link check verifies every URL (redgifs via their API, rest via HEAD) — runs in the background.</span>
+</div>
+{tools}
 <p class="dim">{len(links)} video{'s' if len(links) != 1 else ''}</p>
 <div class="mgrid">
 {''.join(cards) if cards else '<p class="dim">Nothing here — try clearing the filters.</p>'}
