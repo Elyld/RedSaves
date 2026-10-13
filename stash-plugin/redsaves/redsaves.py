@@ -16,6 +16,7 @@ import sys
 import urllib.error
 import urllib.parse
 import urllib.request
+from pathlib import Path
 
 PLUGIN_ID = "redsaves"
 STASH_GRAPHQL = "http://localhost:9999/graphql"
@@ -32,14 +33,19 @@ def _op_name(query):
 _api_key = ""
 
 
+def _emit(level, msg):
+    # Stash reads severity from a \x01<char>\x02 prefix on stderr:
+    # i=info, e=error. Plain lines default to error.
+    sys.stderr.write(f"\x01{level}\x02[redsaves] {msg}\n")
+    sys.stderr.flush()
+
+
 def log(msg):
-    # stdout -> Stash logs this as Info
-    print(f"[redsaves] {msg}", flush=True)
+    _emit("i", msg)
 
 
 def log_err(msg):
-    # stderr -> Stash logs this as Error; reserve for real failures
-    print(f"[redsaves] {msg}", file=sys.stderr, flush=True)
+    _emit("e", msg)
 
 
 # --- Stash GraphQL ---------------------------------------------------------------
@@ -130,7 +136,7 @@ query AllTags($page: Int!) {
 ALL_PERFORMERS = """
 query AllPerformers($page: Int!) {
   findPerformers(filter: {page: $page, per_page: 500}) {
-    performers { id name aliases }
+    performers { id name }
   }
 }"""
 
@@ -188,7 +194,8 @@ def plugin_settings():
     except Exception as e:
         log_err(f"could not read plugin settings: {e}")
     try:
-        with open("config.json", encoding="utf-8") as f:
+        cfg = Path(__file__).resolve().parent / "config.json"
+        with open(cfg, encoding="utf-8") as f:
             settings.update(json.load(f))
     except OSError:
         pass
@@ -276,13 +283,22 @@ def path_in_prefix(path, prefix):
 
 
 def parse_input(raw):
-    """('hook', hookContext) | ('task', args) | (None, None)."""
+    """('hook', hookContext) | ('task', args) | (None, None).
+
+    Stash wraps everything: {"server_connection": {...},
+                              "args": {"hookContext": {...}}} for hooks,
+    {"server_connection": {...}, "args": {...}} for tasks.
+    """
     if not isinstance(raw, dict):
         return None, None
+    args = raw.get("args")
+    if isinstance(args, dict):
+        if isinstance(args.get("hookContext"), dict):
+            return "hook", args["hookContext"]
+        return "task", args
+    # tolerate a bare top-level hookContext too
     if isinstance(raw.get("hookContext"), dict):
         return "hook", raw["hookContext"]
-    if isinstance(raw.get("args"), dict):
-        return "task", raw["args"]
     return None, None
 
 

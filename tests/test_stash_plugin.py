@@ -13,13 +13,22 @@ import redsaves  # noqa: E402
 
 
 def test_parse_input_hook():
+    # real Stash shape: hookContext nested under args
+    kind, ctx = redsaves.parse_input(
+        {"server_connection": {},
+         "args": {"hookContext": {"id": 42, "type": "Scene.Create.Post"}}})
+    assert kind == "hook" and ctx["id"] == 42
+
+
+def test_parse_input_hook_bare():
     kind, ctx = redsaves.parse_input(
         {"hookContext": {"id": "42", "type": "Scene.Create.Post"}})
     assert kind == "hook" and ctx["id"] == "42"
 
 
 def test_parse_input_task():
-    kind, args = redsaves.parse_input({"args": {"mode": "backfill"}})
+    kind, args = redsaves.parse_input(
+        {"server_connection": {}, "args": {"mode": "backfill"}})
     assert kind == "task" and args["mode"] == "backfill"
 
 
