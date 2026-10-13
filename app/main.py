@@ -290,6 +290,61 @@ def api_jdsync_status():
     return scan_mod.get_jdsync_progress()
 
 
+@app.get("/api/stash/lookup")
+def stash_lookup(filename: str = Query(...)):
+    """Metadata lookup for the Stash plugin: given a downloaded filename,
+    return whatever RedSaves knows about it (title, performer, tags, URL,
+    rating, date). {'found': False} when the file isn't in the library."""
+    from pathlib import Path as _Path
+
+    stem = _Path(filename).stem.lower().strip()
+    if not stem:
+        return {"found": False}
+    session = get_session()
+    try:
+        links = session.query(Link).all()
+
+        def score(link) -> tuple:
+            keys = [k for k in scan_mod.media_keys(link.url) if k]
+            local_stem = _Path(link.local_file or "").stem.lower()
+            exact = local_stem == stem or stem in keys
+            fuzzy = any(stem in k or k in stem for k in keys)
+            return (exact, bool(link.local_file), fuzzy, -(link.id or 0))
+
+        candidates = [l for l in links
+                      if score(l)[0] or score(l)[2]]
+        if not candidates:
+            return {"found": False}
+        link = max(candidates, key=score)
+        tags = []
+        for t in [link.subreddit, link.flair,
+                  *((link.tags or "").split(", ") if link.tags else [])]:
+            t = (t or "").strip()
+            if t and t not in tags:
+                tags.append(t)
+        details_bits = []
+        if link.author:
+            details_bits.append(f"u/{link.author}")
+        if link.subreddit:
+            details_bits.append(f"r/{link.subreddit}")
+        if link.score:
+            details_bits.append(f"▲ {link.score}")
+        dt = link.sent_at or link.found_at
+        return {
+            "found": True,
+            "title": link.post_title or stem,
+            "performer": link.creator or link.author or "",
+            "tags": tags[:12],
+            "url": (f"https://www.reddit.com{link.post_permalink}"
+                    if link.post_permalink else link.url),
+            "rating100": 100 if link.favorite else None,
+            "date": dt.strftime("%Y-%m-%d") if dt else None,
+            "details": " · ".join(details_bits),
+        }
+    finally:
+        session.close()
+
+
 def _stats_ctx(session) -> dict:
     """Collection stats for the Stats page."""
     total = session.query(func.count(Link.id)).scalar() or 0
