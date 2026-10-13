@@ -22,7 +22,8 @@ def test_media_markers_match_script(fresh_db):
         _post("https://x.com/v.mp4?x=1"),
         _post("https://redgifs.com/watch/abc"),
         _post("https://v.redd.it/xyz/DASH_720.mp4"),
-        _post("https://example.com/photo.jpg"),   # not media
+        _post("https://example.com/photo.jpg"),   # pictures are media too
+        _post("https://i.redd.it/x.png"),          # (v2.12.0: jpg/png/webp/jpeg)
         _post("https://example.com/article"),      # not media
         _post(""),                                 # empty url
     ])
@@ -32,6 +33,8 @@ def test_media_markers_match_script(fresh_db):
         "https://x.com/v.mp4?x=1",
         "https://redgifs.com/watch/abc",
         "https://v.redd.it/xyz/DASH_720.mp4",
+        "https://example.com/photo.jpg",
+        "https://i.redd.it/x.png",
     ]
 
 

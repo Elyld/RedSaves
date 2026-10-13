@@ -3,7 +3,8 @@
 Behavior is deliberately identical to the standalone script, except where
 the WebUI settings say otherwise:
 - saved posts fetched with ?limit= (post_limit setting, default 25, max 100)
-- media match: '.gif', '.mp4', 'redgifs', 'v.redd.it' as URL substrings
+- media match: '.gif', '.mp4', '.jpg', '.jpeg', '.png', '.webp',
+  'redgifs', 'v.redd.it' as URL substrings
 - optional second source: upvoted posts (include_upvoted setting, default off)
 - within-run URL dedup preserving order, across both sources
 - links are marked sent ONLY when JDownloader accepts them (a failed send
@@ -60,7 +61,9 @@ POST_LIMIT_DEFAULT = 25
 POST_LIMIT_MIN = 1
 POST_LIMIT_MAX = 100  # Reddit's per-request cap
 
-MEDIA_MARKERS = ('.gif', '.mp4', 'redgifs', 'v.redd.it')
+MEDIA_MARKERS = ('.gif', '.mp4', '.jpg', '.jpeg', '.png', '.webp',
+                 'redgifs', 'v.redd.it')
+IMAGE_EXTS = ('.jpg', '.jpeg', '.png', '.webp', '.gif')
 
 REQUIRED_ENV = ('EMAIL', 'PASSWORD', 'DEVICE_NAME', 'CLIENT_ID', 'SECRET_TOKEN',
                 'REFRESH_TOKEN', 'REDDIT_USERNAME', 'DESTINATION_FOLDER',
@@ -157,7 +160,7 @@ def media_embed(url, link_id=None, local_file=""):
       bypasses regional blocks entirely
     - ('redgifs', ifr_url): embeddable redgifs player for watch/ifr/v3 forms
     - ('video', url): direct mp4 (v.redd.it media files, imgur mp4)
-    - ('image', url): direct gif (i.redd.it, imgur gif)
+    - ('image', url): direct image (i.redd.it / imgur jpg, png, webp, gif)
     - ('link', url): anything else — open the original in a new tab
     """
     if local_file and link_id is not None:
@@ -174,7 +177,7 @@ def media_embed(url, link_id=None, local_file=""):
         if host == "v.redd.it":
             return ("video", url)
         low = path.lower()
-        if low.endswith(".gif"):
+        if low.endswith(IMAGE_EXTS):
             return ("image", url)
         if low.endswith(".mp4"):
             return ("video", url)
@@ -510,30 +513,37 @@ def _redgifs_token():
 
 
 def _redgifs_lookup(slug):
-    """(alive, size, creator) via the redgifs API. alive=None when unknown
-    (API hiccup) — the row is left alone rather than false-flagged."""
+    """(alive, size, creator, details) via the redgifs API. alive=None when
+    unknown (API hiccup) — the row is left alone rather than false-flagged.
+    details carries whatever else the API returned: tags, views, likes."""
     global _rg_token
     token = _redgifs_token()
     if not token:
-        return None, None, None
+        return None, None, None, {}
     try:
         r = requests.get(f'https://api.redgifs.com/v2/gifs/{slug}',
                          headers={'Authorization': f'Bearer {token}'},
                          timeout=REQUEST_TIMEOUT)
         if r.status_code == 200:
             gif = (r.json() or {}).get('gif') or {}
-            return True, None, (gif.get('userName') or '')
+            details = {
+                "tags": [t for t in (gif.get('tags') or []) if t],
+                "views": gif.get('views'),
+                "likes": gif.get('likes'),
+            }
+            return True, None, (gif.get('userName') or ''), details
         if r.status_code == 404:
-            return False, None, None
+            return False, None, None, {}
         if r.status_code == 401:
             _rg_token = None  # expired; next link re-auths
     except Exception as e:
         log_error(f"redgifs lookup failed for {slug[:40]}: {e}")
-    return None, None, None
+    return None, None, None, {}
 
 
 def _check_url_alive(url):
-    """Returns (alive, size, creator); alive=None means 'couldn't tell'."""
+    """Returns (alive, size, creator, details); alive=None means 'couldn't
+    tell'. details is redgifs tags/views/likes, else {}."""
     try:
         p = urlsplit(url)
         host = (p.hostname or '').lower()
@@ -549,9 +559,9 @@ def _check_url_alive(url):
                                       'Range': 'bytes=0-0'})
         alive = r.status_code < 400
         size = r.headers.get('Content-Length')
-        return alive, (int(size) if size and size.isdigit() else None), None
+        return alive, (int(size) if size and size.isdigit() else None), None, {}
     except Exception:
-        return None, None, None
+        return None, None, None, {}
 
 
 def run_link_check() -> bool:
@@ -577,7 +587,7 @@ def _run_link_check() -> None:
     try:
         try:
             for link_id, url in links:
-                alive, size, creator = _check_url_alive(url)
+                alive, size, creator, details = _check_url_alive(url)
                 row = session.query(Link).filter(Link.id == link_id).first()
                 if row is not None and alive is not None:
                     row.alive = alive
@@ -586,6 +596,19 @@ def _run_link_check() -> None:
                         row.file_size = size
                     if creator:
                         row.creator = creator
+                    tags = details.get("tags") or []
+                    if tags:
+                        row.tags = ", ".join(tags[:20])
+                    if details.get("views") is not None:
+                        try:
+                            row.views = int(details["views"])
+                        except (TypeError, ValueError):
+                            pass
+                    if details.get("likes") is not None:
+                        try:
+                            row.likes = int(details["likes"])
+                        except (TypeError, ValueError):
+                            pass
                     if not alive:
                         _linkcheck_progress["dead"] += 1
                 _linkcheck_progress["processed"] += 1
@@ -607,7 +630,8 @@ def media_dir() -> Path:
     return Path(os.environ.get("MEDIA_DIR", "/downloads"))
 
 
-VIDEO_EXTS = {".mp4", ".webm", ".gif", ".mov", ".mkv"}
+MEDIA_EXTS = {".mp4", ".webm", ".gif", ".mov", ".mkv",
+              ".jpg", ".jpeg", ".png", ".webp"}
 
 
 def media_keys(url) -> list:
@@ -663,7 +687,7 @@ def _run_filescan() -> None:
         indexed = []
         for dirpath, _, filenames in os.walk(root):
             for fn in filenames:
-                if Path(fn).suffix.lower() not in VIDEO_EXTS:
+                if Path(fn).suffix.lower() not in MEDIA_EXTS:
                     continue
                 full = Path(dirpath) / fn
                 try:
@@ -672,7 +696,7 @@ def _run_filescan() -> None:
                     continue
                 if size > 0:
                     indexed.append((fn.rsplit(".", 1)[0].lower(), full, size))
-        log_info(f"Local file scan: {len(indexed)} video file(s) under {root}.")
+        log_info(f"Local file scan: {len(indexed)} media file(s) under {root}.")
         links = _all_links()
         _filescan_progress["total"] = len(links)
         session = get_session()
@@ -1277,3 +1301,85 @@ def _run_scan(config: ScanConfig | None) -> int:
         # Reddit auth failed: count it; the watchdog alerts if this keeps happening
         record_auth_failure(lambda msg: send_pushover_notification(msg, config, kind="watchdog"))
         return finish("auth_failed", error="Reddit access token request failed")
+
+
+# --- Dupe detector --------------------------------------------------------------
+
+_POST_ID_RE = re.compile(r"/comments/([a-z0-9]+)/", re.IGNORECASE)
+
+
+def _post_id_from_permalink(permalink: str) -> str:
+    m = _POST_ID_RE.search(permalink or "")
+    return m.group(1).lower() if m else ""
+
+
+def _dupe_winner(members) -> object:
+    """Pick the link to keep: favorite first, then local file, then the one
+    with the most metadata, then the oldest row."""
+    def rank(link):
+        return (
+            bool(link.favorite),
+            bool(link.local_file),
+            bool(link.post_title),
+            bool(link.thumbnail),
+            (link.score or 0),
+        )
+    best = max(members, key=rank)
+    # max() keeps the first on ties — order members oldest-first for stability
+    return best
+
+
+def find_dupe_groups() -> list:
+    """Groups of links that look like the same post saved twice: same Reddit
+    post id (redgifs + v.redd.it versions of one post) or same canonical URL
+    (www vs bare host, http vs https). Returns a list of dicts:
+    {'reason': ..., 'links': [Link, ...], 'winner_id': ...}."""
+    session = get_session()
+    try:
+        links = session.query(Link).order_by(Link.id).all()
+        session.expunge_all()
+    finally:
+        session.close()
+    groups = []
+    seen_ids = set()
+
+    by_post = {}
+    for link in links:
+        pid = _post_id_from_permalink(link.post_permalink or "")
+        if pid:
+            by_post.setdefault(pid, []).append(link)
+    for pid, members in sorted(by_post.items()):
+        if len(members) > 1:
+            groups.append({"reason": "same post", "key": f"post:{pid}",
+                           "links": members})
+            seen_ids.update(l.id for l in members)
+
+    by_url = {}
+    for link in links:
+        if link.id in seen_ids:
+            continue
+        by_url.setdefault(_canonicalize_url(link.url), []).append(link)
+    for curl, members in sorted(by_url.items()):
+        if len(members) > 1:
+            groups.append({"reason": "same file", "key": f"url:{curl}",
+                           "links": members})
+
+    for g in groups:
+        g["winner_id"] = _dupe_winner(g["links"]).id
+    return groups
+
+
+def merge_dupe_group(winner_id: int, loser_ids: list) -> int:
+    """Delete the losers of one dupe group. Returns the number deleted."""
+    losers = [i for i in loser_ids if i != winner_id]
+    if not losers:
+        return 0
+    session = get_session()
+    try:
+        deleted = (session.query(Link)
+                   .filter(Link.id.in_(losers))
+                   .delete(synchronize_session=False))
+        session.commit()
+        return deleted
+    finally:
+        session.close()

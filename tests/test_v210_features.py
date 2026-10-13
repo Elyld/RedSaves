@@ -119,7 +119,7 @@ def test_check_url_alive_head(monkeypatch):
         resp.headers = {"Content-Length": "12345"}
         return resp
     monkeypatch.setattr(scanner.requests, "head", fake_head)
-    alive, size, creator = scanner._check_url_alive("https://i.redd.it/x.gif")
+    alive, size, creator, _ = scanner._check_url_alive("https://i.redd.it/x.gif")
     assert alive is True and size == 12345 and creator is None
 
 
@@ -130,7 +130,7 @@ def test_check_url_alive_404(monkeypatch):
         resp.headers = {}
         return resp
     monkeypatch.setattr(scanner.requests, "head", fake_head)
-    alive, size, _ = scanner._check_url_alive("https://i.redd.it/gone.gif")
+    alive, size, _, _ = scanner._check_url_alive("https://i.redd.it/gone.gif")
     assert alive is False and size is None
 
 
@@ -143,7 +143,7 @@ def test_redgifs_lookup_alive_and_creator(monkeypatch):
         resp.json.return_value = {"gif": {"userName": "creator1"}}
         return resp
     monkeypatch.setattr(scanner.requests, "get", fake_get)
-    alive, size, creator = scanner._check_url_alive("https://www.redgifs.com/watch/AbcXyz")
+    alive, size, creator, _ = scanner._check_url_alive("https://www.redgifs.com/watch/AbcXyz")
     assert alive is True and creator == "creator1"
 
 
@@ -155,7 +155,7 @@ def test_redgifs_lookup_404_dead(monkeypatch):
         resp.json.return_value = {}
         return resp
     monkeypatch.setattr(scanner.requests, "get", fake_get)
-    alive, _, _ = scanner._check_url_alive("https://www.redgifs.com/watch/DeadXyz")
+    alive, _, _, _ = scanner._check_url_alive("https://www.redgifs.com/watch/DeadXyz")
     assert alive is False
 
 
@@ -164,7 +164,7 @@ def test_redgifs_lookup_api_down_leaves_row_alone(monkeypatch):
     def fake_get(url, headers=None, timeout=None):
         raise ConnectionError("nope")
     monkeypatch.setattr(scanner.requests, "get", fake_get)
-    alive, _, _ = scanner._check_url_alive("https://www.redgifs.com/watch/AbcXyz")
+    alive, _, _, _ = scanner._check_url_alive("https://www.redgifs.com/watch/AbcXyz")
     assert alive is None  # unknown: never false-flag
 
 
@@ -173,7 +173,7 @@ def test_linkcheck_routes(fresh_db, monkeypatch):
     session = db.get_session()
     _add_link(session, "https://i.redd.it/x.gif")
     session.close()
-    monkeypatch.setattr(scanner, "_check_url_alive", lambda url: (True, 10, None))
+    monkeypatch.setattr(scanner, "_check_url_alive", lambda url: (True, 10, None, {}))
     monkeypatch.setattr(scanner.time, "sleep", lambda s: None)
     with TestClient(app) as client:
         r = client.get("/api/linkcheck-status")

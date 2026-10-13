@@ -50,6 +50,7 @@ def init_db() -> None:
     _ensure_favorite_column()
     _ensure_media_data_columns()
     _ensure_local_file_column()
+    _ensure_deep_data_columns()
     migrate_legacy_history()
 
 
@@ -112,6 +113,22 @@ def _ensure_local_file_column() -> None:
         with _engine.begin() as conn:
             conn.execute(text("ALTER TABLE links ADD COLUMN local_file TEXT DEFAULT ''"))
         logger.info("added links.local_file column")
+
+
+def _ensure_deep_data_columns() -> None:
+    """Add v2.12.0 redgifs deep-data columns (tags, views, likes) to older
+    databases. Same no-Alembic guard pattern."""
+    cols = [c["name"] for c in inspect(_engine).get_columns("links")]
+    specs = [
+        ("tags", "TEXT DEFAULT ''"),
+        ("views", "INTEGER"),
+        ("likes", "INTEGER"),
+    ]
+    with _engine.begin() as conn:
+        for name, ddl in specs:
+            if name not in cols:
+                conn.execute(text(f"ALTER TABLE links ADD COLUMN {name} {ddl}"))
+                logger.info(f"added links.{name} column")
 
 
 def migrate_legacy_history() -> int:
