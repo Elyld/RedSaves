@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import threading
 import time
 from dataclasses import dataclass
@@ -121,28 +122,62 @@ def get_enrich_progress() -> dict:
     return dict(_enrich_progress)
 
 
+def _url_variants(url):
+    """The URL plus cheap normalized variants for /api/info lookup.
+
+    Reddit indexes the submission URL as-submitted; a saved file often holds
+    a slightly different form (www vs bare host, http vs https). Try the
+    original first, then up to 3 variants.
+    """
+    cands = [url]
+    if url.startswith("https://"):
+        cands.append("http://" + url[len("https://"):])
+    elif url.startswith("http://"):
+        cands.append("https://" + url[len("http://"):])
+    out = list(cands)
+    for v in cands:
+        m = re.match(r"(https?://)(www\.)?(.*)", v)
+        if not m:
+            continue
+        scheme, www, rest = m.groups()
+        toggled = scheme + ("" if www else "www.") + rest
+        if toggled not in out:
+            out.append(toggled)
+    seen, uniq = set(), []
+    for v in out:
+        if v not in seen:
+            seen.add(v)
+            uniq.append(v)
+    return uniq[:4]
+
+
 def fetch_info_by_url(config: ScanConfig, token, url):
-    """Look up submissions linking to url via /api/info. Returns a metadata
-    dict or None when nothing is found / on error (row left untouched)."""
+    """Look up submissions linking to url via /api/info. Tries the URL plus
+    normalized variants; returns a metadata dict from the first hit, or None
+    when nothing is found / on error (row left untouched)."""
     try:
         headers = {'Authorization': f'bearer {token}', 'User-Agent': 'RedSaves v2.4'}
-        response = requests.get('https://oauth.reddit.com/api/info',
-                                params={'url': url},
-                                headers=headers, timeout=REQUEST_TIMEOUT)
-        if response.status_code != 200:
-            log_error(f"/api/info lookup failed for {url[:60]}: HTTP {response.status_code}")
-            return None
-        children = (response.json().get('data') or {}).get('children') or []
-        if not children:
-            return None
-        data = children[0]['data']
-        return {
-            'post_title': data.get('title', ''),
-            'post_permalink': data.get('permalink', ''),
-            'subreddit': (data.get('subreddit') or ''),
-            'author': (data.get('author') or ''),
-            'created_utc': data.get('created_utc'),
-        }
+        for attempt in _url_variants(url):
+            response = requests.get('https://oauth.reddit.com/api/info',
+                                    params={'url': attempt},
+                                    headers=headers, timeout=REQUEST_TIMEOUT)
+            if response.status_code != 200:
+                log_error(f"/api/info lookup failed for {attempt[:60]}: HTTP {response.status_code}")
+                return None
+            children = (response.json().get('data') or {}).get('children') or []
+            if children:
+                if attempt != url:
+                    log_info(f"/api/info matched via variant: {attempt[:80]}")
+                data = children[0]['data']
+                return {
+                    'post_title': data.get('title', ''),
+                    'post_permalink': data.get('permalink', ''),
+                    'subreddit': (data.get('subreddit') or ''),
+                    'author': (data.get('author') or ''),
+                    'created_utc': data.get('created_utc'),
+                }
+            log_info(f"/api/info: no match for {url[:80]} (tried {len(_url_variants(url))} forms)")
+        return None
     except Exception as e:
         log_error(f"/api/info lookup failed for {url[:60]}: {e}")
         return None

@@ -318,3 +318,40 @@ def test_enrich_backfills_date_from_post_created_utc(fresh_db, monkeypatch, conf
         assert titled.post_title == "Already titled"
     finally:
         session.close()
+
+
+def test_enrich_tries_url_variants(fresh_db, monkeypatch, config, token_ok):
+    """A www-less URL in the file matches via the www variant."""
+    session = db.get_session()
+    link_id = _add_link(session, "https://redgifs.com/watch/abc123")
+    session.close()
+    payload = {"data": {"children": [{"data": {
+        "title": "Variant hit", "permalink": "/r/x/comments/1",
+        "subreddit": "x", "author": "u1", "created_utc": 1700000000}}]}}
+    empty = {"data": {"children": []}}
+    requested = _fake_info(monkeypatch, {
+        "https://redgifs.com/watch/abc123": empty,
+        "https://www.redgifs.com/watch/abc123": payload,
+    })
+    _no_throttle(monkeypatch)
+
+    scanner.run_enrich(config)
+
+    assert "https://www.redgifs.com/watch/abc123" in requested
+    session = db.get_session()
+    try:
+        row = session.query(Link).filter(Link.id == link_id).first()
+        assert row.post_title == "Variant hit"
+        assert row.author == "u1"
+    finally:
+        session.close()
+
+
+def test_url_variants_dedupes_and_caps():
+    v = scanner._url_variants("https://www.example.com/a.gif")
+    assert v[0] == "https://www.example.com/a.gif"
+    assert len(v) <= 4
+    assert len(set(v)) == len(v)
+    v2 = scanner._url_variants("http://example.com/b.mp4")
+    assert "https://example.com/b.mp4" in v2
+    assert "https://www.example.com/b.mp4" in v2
