@@ -200,13 +200,18 @@ def media_embed(url, link_id=None, local_file=""):
 
 
 def _canonicalize_url(url):
-    """Normalize a saved media URL to the post form Reddit likely indexed.
+    """Normalize a saved media URL for dupe matching and the /api/info lookup.
 
-    Only used for the /api/info lookup — the stored URL is never rewritten.
+    Unifies scheme (https) and strips www. so www-vs-bare and http-vs-https
+    variants of the same file group together; redgifs hosts collapse to
+    redgifs.com with /ifr/ rewritten to /watch/; v.redd.it collapses to the
+    post id. The stored URL is never rewritten.
     """
     try:
         p = urlsplit(url)
         host = (p.hostname or "").lower()
+        if host.startswith("www."):
+            host = host[4:]
         path = p.path or ""
         if host == "v.redd.it":
             # v.redd.it/{id}/CMAF_1080.mp4 -> v.redd.it/{id}
@@ -220,8 +225,8 @@ def _canonicalize_url(url):
             if len(segs) >= 2 and segs[0] == "ifr":
                 path = "/watch/" + "/".join(segs[1:])
             return f"https://www.redgifs.com{path}"
-        # default: lowercase host, drop query/fragment
-        return f"{p.scheme.lower()}://{host}{path}"
+        # default: unified scheme, bare host, drop query/fragment
+        return f"https://{host}{path}"
     except Exception:
         return url
 
@@ -1386,6 +1391,14 @@ def run_scan(config: ScanConfig | None = None) -> int | None:
         _scan_lock.release()
 
 
+def _prune_old_runs(session, keep=200) -> int:
+    """Delete runs beyond the newest `keep` — the table grows 2 rows/day."""
+    old = session.query(Run).order_by(Run.id.desc()).offset(keep).all()
+    for row in old:
+        session.delete(row)
+    return len(old)
+
+
 def _run_scan(config: ScanConfig | None) -> int:
     rotate_log_if_needed()
     session = get_session()
@@ -1393,6 +1406,8 @@ def _run_scan(config: ScanConfig | None) -> int:
     session.add(run)
     session.commit()
     run_id = run.id
+    _prune_old_runs(session)
+    session.commit()
     session.close()
 
     def finish(status: str, found=0, new=0, sent=0, error=""):
@@ -1535,6 +1550,24 @@ def find_dupe_groups() -> list:
     return groups
 
 
+_dupe_cache = {"at": 0.0, "groups": []}
+DUPE_CACHE_TTL = 300  # seconds; the /media badge doesn't need fresh data
+
+
+def find_dupe_groups_cached() -> list:
+    """find_dupe_groups() with a short TTL — the /media badge was paying for
+    a full-table scan on every page load."""
+    now = time.monotonic()
+    if now - _dupe_cache["at"] >= DUPE_CACHE_TTL:
+        _dupe_cache["groups"] = find_dupe_groups()
+        _dupe_cache["at"] = now
+    return _dupe_cache["groups"]
+
+
+def invalidate_dupe_cache() -> None:
+    _dupe_cache["at"] = 0.0
+
+
 def merge_dupe_group(winner_id: int, loser_ids: list) -> int:
     """Fold loser metadata into the winner, then delete the losers.
 
@@ -1572,6 +1605,7 @@ def merge_dupe_group(winner_id: int, loser_ids: list) -> int:
                    .filter(Link.id.in_(losers))
                    .delete(synchronize_session=False))
         session.commit()
+        invalidate_dupe_cache()
         return deleted
     finally:
         session.close()

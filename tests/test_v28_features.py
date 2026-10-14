@@ -352,8 +352,9 @@ def test_enrich_tries_url_variants(fresh_db, monkeypatch, config, token_ok):
 
 def test_url_variants_dedupes_and_caps():
     v = scanner._url_variants("https://www.example.com/a.gif")
-    assert v[0] == "https://www.example.com/a.gif"
-    assert len(v) <= 5
+    assert v[0] == "https://example.com/a.gif"
+    assert "https://www.example.com/a.gif" in v
+    assert len(v) <= 6
     assert len(set(v)) == len(v)
     v2 = scanner._url_variants("http://example.com/b.mp4")
     assert "https://example.com/b.mp4" in v2

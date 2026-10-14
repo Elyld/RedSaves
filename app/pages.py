@@ -524,7 +524,31 @@ as v.redd.it — or the same file under two URL forms. {len(groups)} group{'s' i
     return layout("Dupes", body, "media")
 
 
-def graveyard_page(links, deleted=None, skipped=None) -> str:
+def _pagenav(page, pages, base, params):
+    """Compact « Prev | 1 2 3 | Next » nav preserving query params."""
+    if pages <= 1:
+        return ""
+    from urllib.parse import urlencode
+
+    def link(p, label, cls=""):
+        qs = urlencode({**params, "page": p})
+        return f'<a class="btn pglink {cls}" href="{base}?{qs}">{label}</a>'
+
+    nums = []
+    for p in sorted({1, page - 1, page, page + 1, pages}):
+        if 1 <= p <= pages:
+            nums.append(link(p, str(p), "on" if p == page else ""))
+    html = ""
+    if page > 1:
+        html += link(page - 1, "« Prev")
+    html += "".join(nums)
+    if page < pages:
+        html += link(page + 1, "Next »")
+    return f'<nav class="pagenav">{html}</nav>'
+
+
+def graveyard_page(links, deleted=None, skipped=None, page=1, pages=1,
+                   total=0) -> str:
     """Dead links, with bulk purge."""
     rows = []
     for link in links:
@@ -544,7 +568,7 @@ def graveyard_page(links, deleted=None, skipped=None) -> str:
         purge = f"""
 <form method="post" action="/graveyard/purge" class="form"
       onsubmit="return confirm('Delete dead links from the library? Rows with a downloaded file are always kept.')">
-  <button type="submit" class="bigbtn danger">🪦 Purge dead ({len(links)})</button>
+  <button type="submit" class="bigbtn danger">🪦 Purge dead ({total})</button>
   <span class="dim">Removes the library rows only — and never a row with a
   matched local file or a finished JDownloader download. Files on disk are
   untouched either way.</span>
@@ -557,13 +581,14 @@ def graveyard_page(links, deleted=None, skipped=None) -> str:
     body = f"""
 <h1>Graveyard</h1>
 <p class="dim">Links the dead-link check found gone (deleted posts, pulled videos).
-{len(links)} total. Run <b>🩺 Check dead links</b> on the Media page to refresh this list.</p>
+{total} total. Run <b>🩺 Check dead links</b> on the Media page to refresh this list.</p>
 {result_line}
 {purge}
 <table class="tbl">
 <tr><th>Link</th><th>Author</th><th>Checked</th><th></th></tr>
 {''.join(rows) if rows else '<tr><td colspan="4" class="dim">No dead links. 🎉</td></tr>'}
 </table>
+{_pagenav(page, pages, "/graveyard", {})}
 """
     return layout("Graveyard", body, "media")
 
@@ -791,6 +816,13 @@ def _page_label(page, pages, total, shown):
     start = (page - 1) * 48 + 1
     end = start + shown - 1
     return f"Showing {start}–{end} of {total}"
+
+
+def _safe_json(obj):
+    """JSON for embedding in a <script> block: a </script> sequence in
+    Reddit-sourced text would otherwise break out of the element
+    (stored XSS), so < is escaped."""
+    return json.dumps(obj).replace("<", "\\u003c")
 
 
 def _pagination(page, pages, q, author, subreddit, creator, fav, hide_dead,
@@ -1031,6 +1063,6 @@ def media_page(links, q="", author="", subreddit="", creator="", fav=0,
     </div>
   </div>
 </div>
-<script>{LB_JS.replace("__MEDIA_JSON__", json.dumps(js_items)).replace("__PLAYLISTS_JSON__", json.dumps([{"id": p.id, "name": p.name} for p in playlists]))}</script>
+<script>{LB_JS.replace("__MEDIA_JSON__", _safe_json(js_items)).replace("__PLAYLISTS_JSON__", _safe_json([{"id": p.id, "name": p.name} for p in playlists]))}</script>
 """
     return layout("Media", body, active="media")

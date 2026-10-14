@@ -185,7 +185,7 @@ def media(q: str = Query(default=""), author: str = Query(default=""),
             filescan=scan_mod.get_filescan_progress(),
             jdsync=scan_mod.get_jdsync_progress(),
             playlists=session.query(Playlist).order_by(Playlist.name).all(),
-            dupe_count=len(scan_mod.find_dupe_groups()),
+            dupe_count=len(scan_mod.find_dupe_groups_cached()),
             dead_count=session.query(func.count(Link.id))
             .filter(Link.alive.is_(False)).scalar() or 0)
     finally:
@@ -588,12 +588,19 @@ def dupes_merge_all():
 
 @app.get("/graveyard", response_class=HTMLResponse)
 def graveyard(deleted: int = Query(default=None),
-              skipped: int = Query(default=None)):
+              skipped: int = Query(default=None),
+              page: int = Query(default=1, ge=1)):
     session = get_session()
     try:
-        links = (session.query(Link).filter(Link.alive.is_(False))
-                 .order_by(desc(Link.checked_at)).all())
-        return pages.graveyard_page(links, deleted=deleted, skipped=skipped)
+        query = (session.query(Link).filter(Link.alive.is_(False))
+                 .order_by(desc(Link.checked_at)))
+        total = query.count()
+        per_page = 100
+        page_count = max(1, (total + per_page - 1) // per_page)
+        page = min(page, page_count)
+        links = query.offset((page - 1) * per_page).limit(per_page).all()
+        return pages.graveyard_page(links, deleted=deleted, skipped=skipped,
+                                    page=page, pages=page_count, total=total)
     finally:
         session.close()
 

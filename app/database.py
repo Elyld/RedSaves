@@ -32,6 +32,10 @@ def get_engine():
     if _engine is None:
         DATA_DIR.mkdir(parents=True, exist_ok=True)
         _engine = create_engine(f"sqlite:///{DB_PATH}", connect_args={"check_same_thread": False})
+        # WAL mode: readers (UI) no longer block on writers (background jobs)
+        # and vice versa — kills "database is locked" 500s during scans.
+        with _engine.connect() as conn:
+            conn.execute(text("PRAGMA journal_mode=WAL"))
         SessionLocal = sessionmaker(bind=_engine, autoflush=False, autocommit=False)
     return _engine
 
