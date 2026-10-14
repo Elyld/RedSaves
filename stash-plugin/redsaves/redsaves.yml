@@ -18,11 +18,14 @@ settings:
     displayName: Stash API key (optional)
     description: Only needed if your Stash requires API key authentication
     type: STRING
+  path_prefix:
+    displayName: Only this directory (optional)
+    description: Only process scenes under this path, e.g. /data/reddit. Use the path as seen inside the Stash container. Leave empty to cover the whole library.
+    type: STRING
   dry_run:
     displayName: Dry run
     description: Log what would change without applying it
     type: BOOLEAN
-    default: false
 
 hooks:
   - name: Tag new scenes from RedSaves
