@@ -12,7 +12,7 @@ from urllib.parse import urlsplit
 from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
-from sqlalchemy import desc, func, or_
+from sqlalchemy import and_, desc, func, or_
 
 from app import pages, scheduler
 from app import scanner as scan_mod
@@ -156,29 +156,19 @@ def top():
 def media(q: str = Query(default=""), author: str = Query(default=""),
           subreddit: str = Query(default=""), creator: str = Query(default=""),
           fav: int = Query(default=0), hide_dead: int = Query(default=0),
-          sort: str = Query(default="new")):
+          sort: str = Query(default="new"), kind: str = Query(default="all"),
+          page: int = Query(default=1, ge=1)):
     """Media center: filterable video grid with lightbox player."""
     session = get_session()
     try:
-        query = session.query(Link)
-        if q:
-            like = f"%{q}%"
-            query = query.filter(or_(
-                Link.url.like(like), Link.post_title.like(like),
-                Link.subreddit.like(like), Link.author.like(like),
-                Link.creator.like(like)))
-        if author:
-            query = query.filter(Link.author == author)
-        if subreddit:
-            query = query.filter(Link.subreddit == subreddit)
-        if creator:
-            query = query.filter(Link.creator == creator)
-        if fav:
-            query = query.filter(Link.favorite.is_(True))
-        if hide_dead:
-            query = query.filter(Link.alive.is_(True))
+        query = _filtered_media_query(session, q, author, subreddit, creator,
+                                      fav, hide_dead, kind)
         query = query.order_by(Link.sent_at if sort == "old" else desc(Link.sent_at))
-        links = query.all()
+        total = query.count()
+        per_page = 48
+        page_count = max(1, (total + per_page - 1) // per_page)
+        page = min(page, page_count)
+        links = query.offset((page - 1) * per_page).limit(per_page).all()
 
         def ranked(col):
             return [(r[0] or "?", r[1]) for r in
@@ -189,6 +179,7 @@ def media(q: str = Query(default=""), author: str = Query(default=""),
         return pages.media_page(
             links, q, author, subreddit, creator, fav, hide_dead, sort,
             ranked(Link.author), ranked(Link.subreddit), ranked(Link.creator),
+            kind=kind, page=page, pages=page_count, total=total,
             enrich=scan_mod.get_enrich_progress(),
             linkcheck=scan_mod.get_linkcheck_progress(),
             filescan=scan_mod.get_filescan_progress(),
@@ -197,6 +188,84 @@ def media(q: str = Query(default=""), author: str = Query(default=""),
             dupe_count=len(scan_mod.find_dupe_groups()),
             dead_count=session.query(func.count(Link.id))
             .filter(Link.alive.is_(False)).scalar() or 0)
+    finally:
+        session.close()
+
+
+def _filtered_media_query(session, q="", author="", subreddit="", creator="",
+                          fav=0, hide_dead=0, kind="all"):
+    """Shared filter logic for /media, shuffle deck, and item lookup."""
+    query = session.query(Link)
+    if q:
+        like = f"%{q}%"
+        query = query.filter(or_(
+            Link.url.like(like), Link.post_title.like(like),
+            Link.subreddit.like(like), Link.author.like(like),
+            Link.creator.like(like)))
+    if author:
+        query = query.filter(Link.author == author)
+    if subreddit:
+        query = query.filter(Link.subreddit == subreddit)
+    if creator:
+        query = query.filter(Link.creator == creator)
+    if fav:
+        query = query.filter(Link.favorite.is_(True))
+    if hide_dead:
+        query = query.filter(Link.alive.is_(True))
+    if kind in ("pics", "vids"):
+        url_pic = or_(*[Link.url.like(f"%{e}") for e in scan_mod.IMAGE_EXTS])
+        file_pic = or_(*[func.coalesce(Link.local_file, "").like(f"%{e}")
+                         for e in scan_mod.IMAGE_EXTS])
+        if kind == "pics":
+            query = query.filter(or_(url_pic, file_pic))
+        else:
+            query = query.filter(and_(~url_pic, ~file_pic))
+    return query
+
+
+@app.get("/api/media/shuffle")
+def media_shuffle(q: str = Query(default=""), author: str = Query(default=""),
+                  subreddit: str = Query(default=""),
+                  creator: str = Query(default=""),
+                  fav: int = Query(default=0), hide_dead: int = Query(default=0),
+                  kind: str = Query(default="all")):
+    """ID deck for shuffle mode: playable items matching the media filters."""
+    session = get_session()
+    try:
+        query = _filtered_media_query(session, q, author, subreddit, creator,
+                                      fav, hide_dead, kind)
+        ids = []
+        for link in query.all():
+            k, _src = scan_mod.media_embed(link.url, link.id,
+                                           link.local_file or "")
+            if k in ("redgifs", "video", "image"):
+                ids.append(link.id)
+        return JSONResponse({"ids": ids, "count": len(ids)})
+    finally:
+        session.close()
+
+
+@app.get("/api/media/item/{link_id}")
+def media_item(link_id: int):
+    """One link's player payload, for shuffle mode / on-demand loading."""
+    session = get_session()
+    try:
+        link = session.query(Link).filter(Link.id == link_id).first()
+        if not link:
+            raise HTTPException(status_code=404, detail="not found")
+        kind, src = scan_mod.media_embed(link.url, link.id,
+                                         link.local_file or "")
+        return JSONResponse({
+            "id": link.id, "kind": kind, "src": src, "url": link.url,
+            "title": link.post_title or link.url,
+            "author": link.author or "", "creator": link.creator or "",
+            "sub": link.subreddit or "", "fav": bool(link.favorite),
+            "score": link.score or 0, "duration": link.duration or 0,
+            "local": bool(link.local_file), "views": link.views or 0,
+            "likes": link.likes or 0, "tags": link.tags or "",
+            "flair": link.flair or "", "ratio": link.upvote_ratio or 0,
+            "jd": link.jd_status or "",
+        })
     finally:
         session.close()
 

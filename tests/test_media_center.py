@@ -90,3 +90,99 @@ def test_favorite_toggle(fresh_db):
         assert r.json()["favorite"] is False
         r = client.post("/api/favorite/999999")
         assert r.status_code == 404
+
+
+def test_media_embed_local_image(fresh_db):
+    """A downloaded picture must play as an image, not a video tag."""
+    assert scanner.media_embed("https://www.redgifs.com/watch/Abc",
+                               7, "vids/clip.jpg") == ("image", "/media-file/7")
+    assert scanner.media_embed("https://v.redd.it/a/x.mp4",
+                               8, "vids/clip.mp4") == ("video", "/media-file/8")
+    assert scanner.is_picture(url="https://i.redd.it/x1.png")
+    assert scanner.is_picture(local_file="vids/x.webp")
+    assert not scanner.is_picture(url="https://www.redgifs.com/watch/Abc")
+
+
+def _add_link_full(session, url, local_file="", title="t"):
+    link = Link(url=url, post_title=title, post_permalink="", status="sent",
+                sent_at=datetime.now(), found_at=datetime.now(),
+                local_file=local_file)
+    session.add(link)
+    session.commit()
+    return link.id
+
+
+def test_media_pagination(fresh_db):
+    from fastapi.testclient import TestClient
+    session = db.get_session()
+    for n in range(55):
+        _add_link_full(session, f"https://v.redd.it/v{n}/x.mp4", title=f"clip {n}")
+    session.close()
+    with TestClient(app) as client:
+        r1 = client.get("/media")
+        assert r1.status_code == 200
+        assert r1.text.count('<article class="mcard') == 48
+        assert "Showing 1–48 of 55" in r1.text
+        assert "Next »" in r1.text
+        r2 = client.get("/media", params={"page": 2})
+        assert r2.text.count('<article class="mcard') == 7
+        assert "Showing 49–55 of 55" in r2.text
+        assert "« Prev" in r2.text
+        # page beyond the end clamps to the last page
+        r3 = client.get("/media", params={"page": 99})
+        assert "Showing 49–55 of 55" in r3.text
+
+
+def test_media_kind_filter(fresh_db):
+    from fastapi.testclient import TestClient
+    session = db.get_session()
+    _add_link_full(session, "https://www.redgifs.com/watch/Abc", title="rg clip")
+    _add_link_full(session, "https://v.redd.it/a1/x.mp4", title="redd clip")
+    _add_link_full(session, "https://i.redd.it/p1.jpg", title="pic one")
+    _add_link_full(session, "https://i.imgur.com/p2.png", title="pic two")
+    _add_link_full(session, "https://v.redd.it/a2/x.mp4", title="local pic",
+                   local_file="vids/local.jpg")
+    session.close()
+    with TestClient(app) as client:
+        rp = client.get("/media", params={"kind": "pics"})
+        assert rp.text.count('<article class="mcard') == 3
+        assert "pic one" in rp.text and "local pic" in rp.text
+        assert "rg clip" not in rp.text
+        rv = client.get("/media", params={"kind": "vids"})
+        assert rv.text.count('<article class="mcard') == 2
+        assert "rg clip" in rv.text and "pic one" not in rv.text
+
+
+def test_shuffle_api_respects_filters(fresh_db):
+    from fastapi.testclient import TestClient
+    session = db.get_session()
+    id_clip = _add_link_full(session, "https://www.redgifs.com/watch/Abc",
+                             title="clip")
+    id_pic = _add_link_full(session, "https://i.redd.it/p1.jpg", title="pic")
+    id_dead = _add_link_full(session, "https://example.com/page", title="page")
+    session.close()
+    with TestClient(app) as client:
+        r = client.get("/api/media/shuffle")
+        body = r.json()
+        assert r.status_code == 200
+        assert set(body["ids"]) == {id_clip, id_pic}  # unplayable excluded
+        assert body["count"] == 2
+        r2 = client.get("/api/media/shuffle", params={"kind": "pics"})
+        assert r2.json()["ids"] == [id_pic]
+        r3 = client.get("/api/media/shuffle", params={"q": "clip"})
+        assert r3.json()["ids"] == [id_clip]
+
+
+def test_media_item_api(fresh_db):
+    from fastapi.testclient import TestClient
+    session = db.get_session()
+    lid = _add_link_full(session, "https://i.redd.it/p1.jpg", title="pic",
+                         local_file="")
+    session.close()
+    with TestClient(app) as client:
+        r = client.get(f"/api/media/item/{lid}")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["kind"] == "image" and body["title"] == "pic"
+        assert body["src"] == "https://i.redd.it/p1.jpg"
+        assert client.get("/api/media/item/999999").status_code == 404
